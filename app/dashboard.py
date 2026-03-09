@@ -205,13 +205,15 @@ def _fig_demand_solar(df: pd.DataFrame) -> go.Figure:
 
 
 def _fig_generation_mix(df: pd.DataFrame) -> go.Figure:
-    """Dual-axis: Agile price (left) vs GB wind generation + net imports (right)."""
+    """Dual-axis: Agile price (left) vs GB generation mix (right)."""
     has_wind    = "wind_gen_mw" in df.columns and df["wind_gen_mw"].notna().any()
+    has_gas     = "gas_gen_mw"  in df.columns and df["gas_gen_mw"].notna().any()
+    has_nuclear = "nuclear_mw"  in df.columns and df["nuclear_mw"].notna().any()
     has_imports = "imports_mw"  in df.columns and df["imports_mw"].notna().any()
 
-    if not has_wind and not has_imports:
+    if not any([has_wind, has_gas, has_nuclear, has_imports]):
         fig = go.Figure()
-        fig.update_layout(title="GB Supply Mix — no data yet", height=380,
+        fig.update_layout(title="GB Generation Mix — no data yet", height=380,
                           template=_TEMPLATE)
         return fig
 
@@ -225,18 +227,32 @@ def _fig_generation_mix(df: pd.DataFrame) -> go.Figure:
     ), secondary_y=False)
 
     if has_wind:
-        wind_gw = df["wind_gen_mw"] / 1000.0
         fig.add_trace(go.Scatter(
-            x=df["date"], y=wind_gw,
-            mode="lines", name="GB Wind Generation (GW)",
+            x=df["date"], y=df["wind_gen_mw"] / 1000.0,
+            mode="lines", name="Wind (GW)",
             line=dict(color="#27ae60", width=1.5),
             hovertemplate="%{x|%d %b %Y}<br>Wind: %{y:.1f} GW<extra></extra>",
         ), secondary_y=True)
 
-    if has_imports:
-        imports_gw = df["imports_mw"] / 1000.0
+    if has_gas:
         fig.add_trace(go.Scatter(
-            x=df["date"], y=imports_gw,
+            x=df["date"], y=df["gas_gen_mw"] / 1000.0,
+            mode="lines", name="Gas (GW)",
+            line=dict(color="#e67e22", width=1.5),
+            hovertemplate="%{x|%d %b %Y}<br>Gas: %{y:.1f} GW<extra></extra>",
+        ), secondary_y=True)
+
+    if has_nuclear:
+        fig.add_trace(go.Scatter(
+            x=df["date"], y=df["nuclear_mw"] / 1000.0,
+            mode="lines", name="Nuclear (GW)",
+            line=dict(color="#9b59b6", width=1.2, dash="dot"),
+            hovertemplate="%{x|%d %b %Y}<br>Nuclear: %{y:.1f} GW<extra></extra>",
+        ), secondary_y=True)
+
+    if has_imports:
+        fig.add_trace(go.Scatter(
+            x=df["date"], y=df["imports_mw"] / 1000.0,
             mode="lines", name="Net Imports (GW, + = importing)",
             line=dict(color="#3498db", width=1.2, dash="dash"),
             hovertemplate="%{x|%d %b %Y}<br>Imports: %{y:.1f} GW<extra></extra>",
@@ -244,15 +260,15 @@ def _fig_generation_mix(df: pd.DataFrame) -> go.Figure:
 
     fig.update_layout(
         template=_TEMPLATE,
-        title="Agile Price vs GB Wind Generation & Interconnector Imports  "
-              "(more wind / more imports → lower prices)",
-        legend=dict(orientation="h", y=1.08),
+        title="Agile Price vs GB Generation Mix  "
+              "(gas ↑ → price up; wind / imports ↑ → price down)",
+        legend=dict(orientation="h", y=1.10),
         hovermode="x unified",
-        height=400,
-        margin=dict(t=80, b=40),
+        height=420,
+        margin=dict(t=90, b=40),
     )
     fig.update_yaxes(title_text="Agile Price ex-VAT (p/kWh)", secondary_y=False)
-    fig.update_yaxes(title_text="Generation / Imports (GW)", secondary_y=True)
+    fig.update_yaxes(title_text="Generation (GW)", secondary_y=True)
     return fig
 
 
