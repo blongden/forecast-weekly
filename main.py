@@ -12,7 +12,7 @@ Usage
 import sys
 from datetime import date, timedelta
 
-from app import db, octopus, weather, gas, analysis, charts, dashboard, pvlive, demand, supply
+from app import db, octopus, weather, gas, analysis, charts, dashboard, pvlive, demand, supply, midprice
 from app.config import WIND_SITES, UK_WEATHER_SITES
 
 
@@ -109,6 +109,20 @@ def cmd_update(verbose=True) -> None:
     else:
         if verbose:
             print("[Supply]   GB generation mix up to date — nothing to fetch.")
+
+    # ── EPEX SPOT GB day-ahead prices (Elexon BMRS MID / APXMIDP) ───────────────
+    mp_gaps = midprice.missing_midprice_ranges(start_date, today)
+    if mp_gaps:
+        for gap_start, gap_end in mp_gaps:
+            if verbose:
+                print(f"[MidPrice] Fetching EPEX day-ahead prices {gap_start} → {gap_end} …",
+                      end="", flush=True)
+            n = midprice.fetch_midprice(gap_start, gap_end)
+            if verbose:
+                print(f" {n} records stored.")
+    else:
+        if verbose:
+            print("[MidPrice] EPEX day-ahead prices up to date — nothing to fetch.")
 
     # ── Offshore wind site weather (100m wind speed) ──────────────────────────
     for site_id, site_info in WIND_SITES.items():

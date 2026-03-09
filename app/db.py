@@ -102,6 +102,12 @@ def init_db() -> None:
                 demand_mw     REAL               -- GB Initial National Demand Outturn (MW)
             );
 
+            CREATE TABLE IF NOT EXISTS market_index_halfhourly (
+                datetime_utc    TEXT PRIMARY KEY,  -- ISO-8601 UTC, period-start
+                price_gbp_mwh   REAL,              -- EPEX SPOT GB day-ahead price (£/MWh)
+                volume_mwh      REAL               -- traded volume (MWh)
+            );
+
             CREATE TABLE IF NOT EXISTS generation_halfhourly (
                 datetime_utc        TEXT PRIMARY KEY,  -- ISO-8601 UTC, period-start
                 wind_mw             REAL,              -- GB wind generation (onshore + offshore)
@@ -608,6 +614,57 @@ def get_daily_generation(date_from: date, date_to: date) -> list:
                       AVG(hydro_mw)          AS hydro_mw,
                       AVG(imports_mw)        AS imports_mw
                FROM generation_halfhourly
+               WHERE DATE(datetime_utc) BETWEEN ? AND ?
+               GROUP BY DATE(datetime_utc)
+               ORDER BY date""",
+            (str(date_from), str(date_to)),
+        ).fetchall()
+    return rows
+
+
+# ── EPEX day-ahead market index prices ────────────────────────────────────────
+def upsert_midprice(rows: list[dict]) -> int:
+    """Insert or replace EPEX day-ahead price rows. Returns rows written."""
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO market_index_halfhourly
+               (datetime_utc, price_gbp_mwh, volume_mwh)
+               VALUES (:datetime_utc, :price_gbp_mwh, :volume_mwh)""",
+            rows,
+        )
+    return len(rows)
+
+
+def get_midprice_date_range() -> tuple[str | None, str | None]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT MIN(datetime_utc), MAX(datetime_utc) FROM market_index_halfhourly"
+        ).fetchone()
+    return row[0], row[1]
+
+
+def get_halfhourly_midprice(date_from: date, date_to: date) -> list:
+    """Return half-hourly EPEX day-ahead price rows."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT datetime_utc, price_gbp_mwh
+               FROM market_index_halfhourly
+               WHERE DATE(datetime_utc) BETWEEN ? AND ?
+               ORDER BY datetime_utc""",
+            (str(date_from), str(date_to)),
+        ).fetchall()
+    return rows
+
+
+def get_daily_midprice(date_from: date, date_to: date) -> list:
+    """Return daily average EPEX day-ahead price (£/MWh)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT DATE(datetime_utc) AS date,
+                      AVG(price_gbp_mwh) AS price_gbp_mwh
+               FROM market_index_halfhourly
                WHERE DATE(datetime_utc) BETWEEN ? AND ?
                GROUP BY DATE(datetime_utc)
                ORDER BY date""",

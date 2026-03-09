@@ -72,6 +72,14 @@ CALENDAR_FEATURES = {
     "is_bank_holiday": "Bank Holiday",
 }
 
+# EPEX SPOT GB day-ahead prices — 1-day lag.
+# The day-ahead auction clears at ~12:00 for next-day delivery; yesterday's
+# clearing price is therefore always available when forecasting today/tomorrow.
+# Strong autocorrelation with today's Agile price (both driven by same market).
+MIDPRICE_FEATURES = {
+    "epex_lag1_gbp_mwh": "EPEX Day-Ahead Lag-1 (£/MWh)",
+}
+
 # Interaction terms added to regression models.
 # uk_avg_wind is computed at feature-build time as the mean of all wind-farm site
 # winds — it is NOT added as a standalone feature to avoid multicollinearity.
@@ -100,7 +108,8 @@ WIND_SITE_FEATURES = {f"wind_{sid}": info["label"] for sid, info in WIND_SITES.i
 # Human-readable labels for ALL regression features
 ALL_FEATURE_LABELS = {
     **WEATHER_VARS, **SOLAR_FEATURES, **DEMAND_FEATURES, **SUPPLY_FEATURES,
-    **CALENDAR_FEATURES, **INTERACTION_FEATURES, **COMMODITY_FEATURES, **WIND_SITE_FEATURES,
+    **CALENDAR_FEATURES, **MIDPRICE_FEATURES,
+    **INTERACTION_FEATURES, **COMMODITY_FEATURES, **WIND_SITE_FEATURES,
 }
 
 # Ordered feature lists for each model.
@@ -109,7 +118,7 @@ ALL_FEATURE_LABELS = {
 DAILY_FEATURES = (["temperature_2m", "heating_dd", "solar_gw", "demand_mw",
                    "wind_gen_mw", "gas_gen_mw", "nuclear_mw",
                    "pumped_storage_mw", "hydro_mw", "imports_mw",
-                   "precipitation", "is_bank_holiday"] +
+                   "precipitation", "is_bank_holiday", "epex_lag1_gbp_mwh"] +
                   list(INTERACTION_FEATURES.keys()) +
                   list(COMMODITY_FEATURES.keys()) +
                   list(WIND_SITE_FEATURES.keys()))
@@ -118,7 +127,7 @@ HH_FEATURES = [
     "temperature_2m", "heating_dd", "solar_gw", "demand_mw",
     "wind_gen_mw", "gas_gen_mw", "nuclear_mw",
     "pumped_storage_mw", "hydro_mw", "imports_mw",
-    "precipitation", "is_bank_holiday",
+    "precipitation", "is_bank_holiday", "epex_lag1_gbp_mwh",
     "temp_x_wind", "wind_x_solar",
     "gas_ttf_roll7", "brent_roll7",
     "wind_dogger_bank", "wind_hornsea", "wind_walney",
@@ -173,6 +182,18 @@ def _add_supply_features(df: pd.DataFrame, date_from: date, date_to: date) -> pd
     gen_df["date"] = pd.to_datetime(gen_df["date"])
     return pd.merge(df, gen_df[["date", "wind_gen_mw", "gas_gen_mw", "nuclear_mw",
                                  "pumped_storage_mw", "hydro_mw", "imports_mw"]], on="date", how="left")
+
+
+def _add_midprice_features(df: pd.DataFrame, date_from: date, date_to: date) -> pd.DataFrame:
+    """Join EPEX day-ahead price (1-day lag) from market_index_halfhourly into the daily df."""
+    rows = db.get_daily_midprice(date_from, date_to)
+    if not rows:
+        return df
+    mp_df = pd.DataFrame(rows, columns=["date", "epex_gbp_mwh"])
+    mp_df["date"] = pd.to_datetime(mp_df["date"])
+    # Lag by 1 day: use yesterday's price to predict today's
+    mp_df["epex_lag1_gbp_mwh"] = mp_df["epex_gbp_mwh"].shift(1)
+    return pd.merge(df, mp_df[["date", "epex_lag1_gbp_mwh"]], on="date", how="left")
 
 
 def estimate_wind_gen_from_speed(df_historical: pd.DataFrame,
@@ -304,6 +325,7 @@ def load_daily_df(date_from: date, date_to: date) -> pd.DataFrame:
     df = _add_solar_features(df, date_from, date_to)
     df = _add_demand_features(df, date_from, date_to)
     df = _add_supply_features(df, date_from, date_to)
+    df = _add_midprice_features(df, date_from, date_to)
     # Heating degree days: non-linear demand signal (cold snaps drive more demand)
     df["heating_dd"] = (15.5 - df["temperature_2m"]).clip(lower=0.0)
     # Bank holiday flag: demand profile resembles Sunday regardless of calendar day
@@ -321,7 +343,8 @@ def load_daily_df(date_from: date, date_to: date) -> pd.DataFrame:
 def compute_correlations(df: pd.DataFrame) -> dict:
     """Return dict of {var: {r, p, label}} Pearson correlations with ex-VAT price."""
     results = {}
-    vars_to_correlate = {**WEATHER_VARS, **SOLAR_FEATURES, **DEMAND_FEATURES, **SUPPLY_FEATURES}
+    vars_to_correlate = {**WEATHER_VARS, **SOLAR_FEATURES, **DEMAND_FEATURES,
+                         **SUPPLY_FEATURES, **MIDPRICE_FEATURES}
     for var, label in vars_to_correlate.items():
         if var not in df.columns or df[var].isna().all():
             continue
@@ -486,6 +509,18 @@ def predict_from_forecast(forecast_df: pd.DataFrame,
         bh = _uk_holidays()
         fc["is_bank_holiday"] = fc["date"].apply(lambda d: 1 if d.date() in bh else 0)
 
+    # epex_lag1_gbp_mwh: use most recent known EPEX price as a constant estimate.
+    # Day-ahead prices are autocorrelated; the most recent known price is a better
+    # prior than zero for the 7-day horizon.
+    if "epex_lag1_gbp_mwh" in feature_cols:
+        if "epex_lag1_gbp_mwh" not in fc.columns or fc["epex_lag1_gbp_mwh"].isna().all():
+            if df_historical is not None and "epex_lag1_gbp_mwh" in df_historical.columns:
+                last_known = df_historical["epex_lag1_gbp_mwh"].dropna()
+                epex_const = float(last_known.iloc[-1]) if len(last_known) > 0 else np.nan
+            else:
+                epex_const = np.nan
+            fc["epex_lag1_gbp_mwh"] = epex_const
+
     # Interaction terms using mean of wind-farm sites as the wind signal
     wind_site_cols = [c for c in fc.columns if c.startswith("wind_") and c in feature_cols]
     uk_avg_wind = fc[wind_site_cols].mean(axis=1) if wind_site_cols else pd.Series(0.0, index=fc.index)
@@ -563,14 +598,15 @@ def build_halfhourly_df(date_from: date, date_to: date) -> pd.DataFrame:
         if row["hydro_mw"]          is not None: hydro_by_utc[dt_key]       = row["hydro_mw"]
         if row["imports_mw"]        is not None: imports_by_utc[dt_key]     = row["imports_mw"]
 
-    # Build commodity + wind-site lookup keyed by date
+    # Build commodity + wind-site + EPEX lag lookup keyed by date
     _temp_daily = load_daily_df(date_from, date_to)
     daily_by_date: dict[str, dict] = {}
     for _, row in _temp_daily.iterrows():
         dk = str(row["date"].date())
         daily_by_date[dk] = {
-            "brent_roll7":   row.get("brent_roll7"),
-            "gas_ttf_roll7": row.get("gas_ttf_roll7"),
+            "brent_roll7":       row.get("brent_roll7"),
+            "gas_ttf_roll7":     row.get("gas_ttf_roll7"),
+            "epex_lag1_gbp_mwh": row.get("epex_lag1_gbp_mwh"),
         }
         for col in _temp_daily.columns:
             if col.startswith("wind_"):
@@ -627,6 +663,7 @@ def build_halfhourly_df(date_from: date, date_to: date) -> pd.DataFrame:
             "wind_x_solar":        uk_avg_wind * (solar_gw if not np.isnan(solar_gw) else 0.0),
             "brent_roll7":         d.get("brent_roll7"),
             "gas_ttf_roll7":       d.get("gas_ttf_roll7"),
+            "epex_lag1_gbp_mwh":   d.get("epex_lag1_gbp_mwh"),
             **{k: d.get(k) for k in d if k.startswith("wind_")},
             **_time_features(dt_local),
         })
@@ -759,6 +796,14 @@ def predict_halfhourly_forecast(
 
     bh_set = _uk_holidays() if need_bank_holiday else set()
 
+    # EPEX lag: use most recent known price as a constant for the whole forecast horizon
+    need_epex = "epex_lag1_gbp_mwh" in cols_needed
+    epex_lag_const: float = np.nan
+    if need_epex and df_historical is not None and "epex_lag1_gbp_mwh" in df_historical.columns:
+        last_known = df_historical["epex_lag1_gbp_mwh"].dropna()
+        if len(last_known) > 0:
+            epex_lag_const = float(last_known.iloc[-1])
+
     records = []
     for _, row in forecast_hourly_df.iterrows():
         hour_key = row["datetime"].strftime("%Y-%m-%dT%H:00")
@@ -802,6 +847,7 @@ def predict_halfhourly_forecast(
                 "hydro_mw":            hydro_mw,
                 "imports_mw":          imports_mw,
                 "is_bank_holiday":     is_bh,
+                "epex_lag1_gbp_mwh":   epex_lag_const if need_epex else None,
                 "temp_x_wind":         row["temperature_2m"] * uk_avg_wind,
                 "wind_x_solar":        uk_avg_wind * (solar_signal or 0.0),
                 "brent_roll7":         (latest_commodity or {}).get("brent_roll7"),

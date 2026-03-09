@@ -273,28 +273,26 @@ def _fig_generation_mix(df: pd.DataFrame) -> go.Figure:
 
 
 def _fig_scatter(df: pd.DataFrame) -> go.Figure:
-    """
-    2×2 scatter plots: price vs the four most informative predictors.
-    Demand leads as it has the highest correlation (r ≈ +0.52).
-    """
-    var_list = [
-        ("demand_mw",          "GB Demand (MW)"),
-        ("wind_gen_mw",        "GB Wind Generation (MW)"),
-        ("solar_gw",           "Solar Generation (GW, GB actual)"),
-        ("temperature_2m",     "Temperature (°C, UK avg)"),
+    """3×2 scatter plots: price vs the six most informative predictors."""
+    all_vars = [
+        ("gas_gen_mw",         "GB Gas Generation (MW)",       "#e67e22"),
+        ("demand_mw",          "GB Demand (MW)",                "#8e44ad"),
+        ("wind_gen_mw",        "GB Wind Generation (MW)",       "#27ae60"),
+        ("epex_lag1_gbp_mwh",  "EPEX Day-Ahead Lag-1 (£/MWh)", "#2980b9"),
+        ("pumped_storage_mw",  "GB Pumped Storage (MW)",        "#e74c3c"),
+        ("solar_gw",           "Solar Generation (GW)",         "#f39c12"),
     ]
-    # Only include variables that are present and have data
-    var_list = [(v, l) for v, l in var_list
+    var_list = [(v, l, c) for v, l, c in all_vars
                 if v in df.columns and df[v].notna().any()]
 
-    n = len(var_list)
-    cols = 2
-    rows = (n + 1) // cols
-    fig = make_subplots(rows=rows, cols=cols,
-                        subplot_titles=[l for _, l in var_list])
+    n    = len(var_list)
+    ncols = 2
+    nrows = (n + 1) // ncols
+    fig = make_subplots(rows=nrows, cols=ncols,
+                        subplot_titles=[l for _, l, _ in var_list])
 
-    for idx, ((var, label), colour) in enumerate(zip(var_list, _COLOURS)):
-        r, c = divmod(idx, cols)
+    for idx, (var, label, colour) in enumerate(var_list):
+        r, c = divmod(idx, ncols)
         valid = df[["avg_price_ex_vat", var]].dropna()
         x = valid[var].values
         y = valid["avg_price_ex_vat"].values
@@ -315,12 +313,12 @@ def _fig_scatter(df: pd.DataFrame) -> go.Figure:
         ), row=r + 1, col=c + 1)
 
         fig.update_xaxes(title_text=label, row=r + 1, col=c + 1)
-        fig.update_yaxes(title_text="Price ex-VAT (p/kWh)", row=r + 1, col=c + 1)
+        fig.update_yaxes(title_text="Price (p/kWh)", row=r + 1, col=c + 1)
 
     fig.update_layout(
         template=_TEMPLATE,
-        title="Price vs Key Predictors  (demand is the strongest single signal)",
-        height=680,
+        title="Price vs Key Predictors  (scatter with linear trend line)",
+        height=max(500, 340 * nrows),
         margin=dict(t=80, b=40),
     )
     return fig
@@ -437,6 +435,128 @@ def _fig_hh_backtest(hh_bt_df, hh_bt_metrics: dict) -> go.Figure:
     return fig
 
 
+def _fig_correlation_bars(correlations: dict) -> go.Figure:
+    """Horizontal bar chart of all Pearson correlations, sorted by magnitude."""
+    sorted_corr = sorted(correlations.items(), key=lambda x: x[1]["r"])
+    labels = [v["label"] for _, v in sorted_corr]
+    r_vals = [v["r"] for _, v in sorted_corr]
+    colours = [
+        "#27ae60" if r < -0.3 else ("#a9dfbf" if r < 0 else ("#f1948a" if r < 0.3 else "#e74c3c"))
+        for r in r_vals
+    ]
+
+    fig = go.Figure(go.Bar(
+        x=r_vals, y=labels,
+        orientation="h",
+        marker_color=colours,
+        hovertemplate="%{y}<br>r = %{x:+.3f}<extra></extra>",
+    ))
+    fig.add_vline(x=0, line_width=1, line_color="#2c3e50")
+    fig.update_layout(
+        template=_TEMPLATE,
+        title="Price Driver Correlations  (Pearson r with ex-VAT Agile price)",
+        xaxis_title="Correlation coefficient r",
+        xaxis=dict(range=[-1, 1]),
+        height=max(300, 28 * len(labels) + 80),
+        margin=dict(t=60, b=40, l=260, r=20),
+    )
+    return fig
+
+
+def _fig_generation_stacked(df: pd.DataFrame) -> go.Figure:
+    """Stacked area chart of GB generation mix (GW) over time, with price on secondary axis."""
+    cols = [
+        ("nuclear_mw",       "Nuclear",  "#9b59b6", "rgba(155,89,182,0.7)"),
+        ("hydro_mw",         "Hydro",    "#1abc9c", "rgba(26,188,156,0.7)"),
+        ("solar_gw_scaled",  "Solar",    "#f39c12", "rgba(243,156,18,0.7)"),
+        ("wind_gen_mw",      "Wind",     "#27ae60", "rgba(39,174,96,0.7)"),
+        ("gas_gen_mw",       "Gas",      "#e67e22", "rgba(230,126,34,0.7)"),
+    ]
+
+    # Scale solar to MW for stacking
+    df = df.copy()
+    if "solar_gw" in df.columns:
+        df["solar_gw_scaled"] = df["solar_gw"] * 1000.0
+
+    available = [(col, label, colour, fill) for col, label, colour, fill in cols
+                 if col in df.columns and df[col].notna().any()]
+
+    if not available:
+        fig = go.Figure()
+        fig.update_layout(title="Generation Mix — no data yet", height=400,
+                          template=_TEMPLATE)
+        return fig
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    for col, label, colour, fill in available:
+        fig.add_trace(go.Scatter(
+            x=df["date"], y=df[col] / 1000.0,
+            mode="lines", name=label,
+            stackgroup="gen",
+            line=dict(width=0.5, color=colour),
+            fillcolor=fill,
+            hovertemplate=f"%{{x|%d %b}}<br>{label}: %{{y:.1f}} GW<extra></extra>",
+        ), secondary_y=False)
+
+    fig.add_trace(go.Scatter(
+        x=df["date"], y=df["avg_price_ex_vat"],
+        mode="lines", name="Agile ex-VAT (p/kWh)",
+        line=dict(color=_PRICE_COL, width=1.5),
+        hovertemplate="%{x|%d %b %Y}<br>Price: %{y:.2f}p/kWh<extra></extra>",
+    ), secondary_y=True)
+
+    fig.update_layout(
+        template=_TEMPLATE,
+        title="GB Generation Mix Over Time  (stacked area = GW dispatched)",
+        legend=dict(orientation="h", y=1.10),
+        hovermode="x unified",
+        height=440,
+        margin=dict(t=90, b=40),
+    )
+    fig.update_yaxes(title_text="Generation (GW)", secondary_y=False)
+    fig.update_yaxes(title_text="Agile Price ex-VAT (p/kWh)", secondary_y=True)
+    return fig
+
+
+def _fig_epex_vs_agile(df: pd.DataFrame) -> go.Figure:
+    """Scatter / dual-axis: EPEX SPOT day-ahead price vs Agile tariff over time."""
+    has_epex = "epex_lag1_gbp_mwh" in df.columns and df["epex_lag1_gbp_mwh"].notna().any()
+    if not has_epex:
+        fig = go.Figure()
+        fig.update_layout(title="EPEX Day-Ahead vs Agile — no data yet",
+                          height=380, template=_TEMPLATE)
+        return fig
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    fig.add_trace(go.Scatter(
+        x=df["date"], y=df["avg_price_ex_vat"],
+        mode="lines", name="Agile ex-VAT (p/kWh)",
+        line=dict(color=_PRICE_COL, width=1.5),
+        hovertemplate="%{x|%d %b %Y}<br>Agile: %{y:.2f}p/kWh<extra></extra>",
+    ), secondary_y=False)
+
+    fig.add_trace(go.Scatter(
+        x=df["date"], y=df["epex_lag1_gbp_mwh"],
+        mode="lines", name="EPEX SPOT day-ahead lag-1 (£/MWh)",
+        line=dict(color="#2980b9", width=1.5),
+        hovertemplate="%{x|%d %b %Y}<br>EPEX: £%{y:.1f}/MWh<extra></extra>",
+    ), secondary_y=True)
+
+    fig.update_layout(
+        template=_TEMPLATE,
+        title="Agile Price vs EPEX Day-Ahead  (Agile is priced from the day-ahead wholesale auction)",
+        legend=dict(orientation="h", y=1.08),
+        hovermode="x unified",
+        height=400,
+        margin=dict(t=80, b=40),
+    )
+    fig.update_yaxes(title_text="Agile Price ex-VAT (p/kWh)", secondary_y=False)
+    fig.update_yaxes(title_text="EPEX Day-Ahead (£/MWh)", secondary_y=True)
+    return fig
+
+
 def _corr_table(correlations: dict) -> go.Figure:
     sorted_corr = sorted(correlations.items(), key=lambda x: abs(x[1]["r"]), reverse=True)
     labels  = [v["label"] for _, v in sorted_corr]
@@ -444,10 +564,6 @@ def _corr_table(correlations: dict) -> go.Figure:
     p_vals  = [f"{v['p']:.2e}" for _, v in sorted_corr]
     sig     = [
         "***" if v["p"] < 0.001 else ("**" if v["p"] < 0.01 else ("*" if v["p"] < 0.05 else ""))
-        for _, v in sorted_corr
-    ]
-    colours = [
-        "#2ecc71" if v["r"] < -0.4 else ("#f39c12" if v["r"] < 0 else "#e74c3c")
         for _, v in sorted_corr
     ]
 
@@ -459,14 +575,12 @@ def _corr_table(correlations: dict) -> go.Figure:
         ),
         cells=dict(
             values=[labels, r_vals, p_vals, sig],
-            fill_color=[["white"] * len(labels), colours,
-                        ["white"] * len(labels), ["white"] * len(labels)],
             align="left", font=dict(size=12), height=32,
         ),
     ))
     fig.update_layout(
         template=_TEMPLATE,
-        title="Pearson Correlations with Ex-VAT Price",
+        title="Pearson Correlations — Detail Table",
         height=max(200, 60 + 32 * len(labels)),
         margin=dict(t=60, b=10, l=0, r=0),
     )
@@ -555,14 +669,17 @@ def generate(
         sub = f'<p class="section-sub">{subtitle}</p>' if subtitle else ""
         return f'<div class="section-header"><h2>{title}</h2>{sub}</div>'
 
-    fig_forecast    = _fig_halfhourly_forecast(hh_pred, hist_mean)
-    fig_history     = _fig_history(df_daily)
-    fig_commodity   = _fig_commodity(df_daily)
-    fig_demand      = _fig_demand_solar(df_daily)
-    fig_generation  = _fig_generation_mix(df_daily)
-    fig_scatter     = _fig_scatter(df_daily)
-    fig_corr        = _corr_table(correlations)
-    fig_model       = _model_table(r2_daily, r2_hh, model, feature_cols)
+    fig_forecast      = _fig_halfhourly_forecast(hh_pred, hist_mean)
+    fig_history       = _fig_history(df_daily)
+    fig_commodity     = _fig_commodity(df_daily)
+    fig_demand        = _fig_demand_solar(df_daily)
+    fig_generation    = _fig_generation_mix(df_daily)
+    fig_gen_stacked   = _fig_generation_stacked(df_daily)
+    fig_epex          = _fig_epex_vs_agile(df_daily)
+    fig_corr_bars     = _fig_correlation_bars(correlations)
+    fig_scatter       = _fig_scatter(df_daily)
+    fig_corr          = _corr_table(correlations)
+    fig_model         = _model_table(r2_daily, r2_hh, model, feature_cols)
 
     bt_df      = backtest_df      if backtest_df      is not None else pd.DataFrame()
     bt_metrics = backtest_metrics if backtest_metrics is not None else {}
@@ -676,22 +793,25 @@ def generate(
 
 <div id="drivers">
   {_section("Price Drivers",
-            "Gas prices set the floor for UK electricity costs. "
-            "High demand pushes prices up; high wind and solar generation pushes them down.")}
+            "What moves the Agile price? Gas generation and demand push prices up; "
+            "wind, solar, and imports push them down. "
+            "The day-ahead EPEX auction price is the direct pricing basis for the Agile tariff.")}
 </div>
 <div class="charts">
+  {_div(fig_corr_bars)}
   {_div(fig_commodity)}
+  {_div(fig_epex)}
   {_div(fig_demand)}
   {_div(fig_generation)}
 </div>
 
 <div id="history">
   {_section("12-Month Price History",
-            "Daily average Agile tariff price over the past 12 months. "
-            "Dotted line shows estimated wholesale cost (ex-VAT ÷ distribution multiplier).")}
+            "Daily average Agile tariff and GB generation mix over the past 12 months.")}
 </div>
 <div class="charts">
   {_div(fig_history)}
+  {_div(fig_gen_stacked)}
 </div>
 
 <div id="accuracy">
@@ -711,17 +831,18 @@ def generate(
             "Coefficients are standardised (β) so their magnitude reflects relative importance.")}
 </div>
 <div class="charts">
+  {_div(fig_scatter)}
   {_div(fig_corr, full_width=False)}
   {_div(fig_model, full_width=False)}
-  {_div(fig_scatter)}
 </div>
 
 <footer>
-  Octopus Agile AGILE-24-10-01 · Region N (Southern Scotland) ·
+  Octopus Agile AGILE-24-10-01 · Region N (North Scotland / SSEH) ·
   Weather: Open-Meteo UK average (6 sites: Edinburgh, Newcastle, Manchester, Birmingham, London, Cardiff) ·
   Solar: Sheffield Solar PV_Live API (GB national generation) ·
   Demand: Elexon BMRS INDO (GB Initial National Demand Outturn) ·
-  Generation mix: Elexon BMRS FUELHH (wind, gas, nuclear, interconnectors) ·
+  Generation mix: Elexon BMRS FUELHH (wind, gas, nuclear, pumped hydro, hydro, interconnectors) ·
+  Day-ahead prices: Elexon BMRS MID (EPEX SPOT GB / APXMIDP) ·
   Commodity: Yahoo Finance (TTF gas, Brent crude) ·
   Network charges retained in price; VAT removed
 </footer>
