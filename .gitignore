@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+.venv/
+env/
+
+# Database (local data — not committed)
+*.db
+*.sqlite
+*.sqlite3
+
+# Generated outputs
+dashboard.html
+charts/
+
+# Archives
+archive/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+*.env
+
+# macOS
+.DS_Store
