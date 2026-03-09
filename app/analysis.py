@@ -6,6 +6,7 @@ Half-hourly model: weather + time features → per-slot ex-VAT price.
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+import holidays as holidays_lib
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -17,10 +18,24 @@ from app.config import AGILE_VAT, AGILE_D, WIND_SITES
 
 LOCAL_TZ = ZoneInfo("Europe/London")
 
+# UK bank holidays (England + Scotland union) for is_bank_holiday feature.
+# Lazy-built on first access to keep startup fast.
+_UK_HOLIDAYS: set[date] | None = None
+
+
+def _uk_holidays() -> set[date]:
+    global _UK_HOLIDAYS
+    if _UK_HOLIDAYS is None:
+        eng = holidays_lib.country_holidays("GB", subdiv="ENG", years=range(2023, 2030))
+        sct = holidays_lib.country_holidays("GB", subdiv="SCT", years=range(2023, 2030))
+        _UK_HOLIDAYS = set(eng.keys()) | set(sct.keys())
+    return _UK_HOLIDAYS
+
 # Base weather variables (used for correlations and scatter plots).
 # UK averages across config.UK_WEATHER_SITES — no Edinburgh-only wind_speed_10m.
 WEATHER_VARS = {
     "temperature_2m":      "Temperature (°C, UK avg)",
+    "heating_dd":          "Heating Degree Days (base 15.5°C)",
     "shortwave_radiation": "Solar Radiation (W/m², UK avg)",
     "precipitation":       "Precipitation (mm/day, UK avg)",
 }
@@ -44,10 +59,17 @@ DEMAND_FEATURES = {
 # imports_mw:  net interconnector imports — negatively correlated (cheap imports suppress UK price).
 # For forecast: wind_gen_mw estimated from wind speed; imports_mw from historical profile.
 SUPPLY_FEATURES = {
-    "wind_gen_mw":  "GB Wind Generation (MW)",
-    "gas_gen_mw":   "GB Gas Generation (MW)",
-    "nuclear_mw":   "GB Nuclear Generation (MW)",
-    "imports_mw":   "GB Net Interconnector Imports (MW)",
+    "wind_gen_mw":         "GB Wind Generation (MW)",
+    "gas_gen_mw":          "GB Gas Generation (MW)",
+    "nuclear_mw":          "GB Nuclear Generation (MW)",
+    "pumped_storage_mw":   "GB Pumped Storage (MW)",
+    "hydro_mw":            "GB Hydro (MW)",
+    "imports_mw":          "GB Net Interconnector Imports (MW)",
+}
+
+# Calendar features
+CALENDAR_FEATURES = {
+    "is_bank_holiday": "Bank Holiday",
 }
 
 # Interaction terms added to regression models.
@@ -78,21 +100,25 @@ WIND_SITE_FEATURES = {f"wind_{sid}": info["label"] for sid, info in WIND_SITES.i
 # Human-readable labels for ALL regression features
 ALL_FEATURE_LABELS = {
     **WEATHER_VARS, **SOLAR_FEATURES, **DEMAND_FEATURES, **SUPPLY_FEATURES,
-    **INTERACTION_FEATURES, **COMMODITY_FEATURES, **WIND_SITE_FEATURES,
+    **CALENDAR_FEATURES, **INTERACTION_FEATURES, **COMMODITY_FEATURES, **WIND_SITE_FEATURES,
 }
 
 # Ordered feature lists for each model.
 # solar_gw replaces shortwave_radiation as the primary solar signal in the model.
 # shortwave_radiation is kept in WEATHER_VARS for correlation display only.
-DAILY_FEATURES = (["temperature_2m", "solar_gw", "demand_mw",
-                   "wind_gen_mw", "gas_gen_mw", "nuclear_mw", "imports_mw", "precipitation"] +
+DAILY_FEATURES = (["temperature_2m", "heating_dd", "solar_gw", "demand_mw",
+                   "wind_gen_mw", "gas_gen_mw", "nuclear_mw",
+                   "pumped_storage_mw", "hydro_mw", "imports_mw",
+                   "precipitation", "is_bank_holiday"] +
                   list(INTERACTION_FEATURES.keys()) +
                   list(COMMODITY_FEATURES.keys()) +
                   list(WIND_SITE_FEATURES.keys()))
 
 HH_FEATURES = [
-    "temperature_2m", "solar_gw", "demand_mw",
-    "wind_gen_mw", "gas_gen_mw", "nuclear_mw", "imports_mw", "precipitation",
+    "temperature_2m", "heating_dd", "solar_gw", "demand_mw",
+    "wind_gen_mw", "gas_gen_mw", "nuclear_mw",
+    "pumped_storage_mw", "hydro_mw", "imports_mw",
+    "precipitation", "is_bank_holiday",
     "temp_x_wind", "wind_x_solar",
     "gas_ttf_roll7", "brent_roll7",
     "wind_dogger_bank", "wind_hornsea", "wind_walney",
@@ -142,9 +168,11 @@ def _add_supply_features(df: pd.DataFrame, date_from: date, date_to: date) -> pd
     if not rows:
         return df
     gen_df = pd.DataFrame(rows, columns=["date", "wind_gen_mw", "gas_gen_mw",
-                                          "nuclear_mw", "imports_mw"])
+                                          "nuclear_mw", "pumped_storage_mw",
+                                          "hydro_mw", "imports_mw"])
     gen_df["date"] = pd.to_datetime(gen_df["date"])
-    return pd.merge(df, gen_df[["date", "wind_gen_mw", "gas_gen_mw", "nuclear_mw", "imports_mw"]], on="date", how="left")
+    return pd.merge(df, gen_df[["date", "wind_gen_mw", "gas_gen_mw", "nuclear_mw",
+                                 "pumped_storage_mw", "hydro_mw", "imports_mw"]], on="date", how="left")
 
 
 def estimate_wind_gen_from_speed(df_historical: pd.DataFrame,
@@ -276,6 +304,11 @@ def load_daily_df(date_from: date, date_to: date) -> pd.DataFrame:
     df = _add_solar_features(df, date_from, date_to)
     df = _add_demand_features(df, date_from, date_to)
     df = _add_supply_features(df, date_from, date_to)
+    # Heating degree days: non-linear demand signal (cold snaps drive more demand)
+    df["heating_dd"] = (15.5 - df["temperature_2m"]).clip(lower=0.0)
+    # Bank holiday flag: demand profile resembles Sunday regardless of calendar day
+    bh = _uk_holidays()
+    df["is_bank_holiday"] = df["date"].apply(lambda d: 1 if d.date() in bh else 0)
     # Interaction terms using mean of wind-farm sites as the wind signal
     wind_site_cols = [c for c in df.columns if c.startswith("wind_")]
     uk_avg_wind = df[wind_site_cols].mean(axis=1) if wind_site_cols else pd.Series(0.0, index=df.index)
@@ -432,6 +465,27 @@ def predict_from_forecast(forecast_df: pd.DataFrame,
                 nuclear_mean = np.nan
             fc["nuclear_mw"] = nuclear_mean
 
+    # Estimate pumped_storage_mw and hydro_mw from historical day-of-week averages
+    for col in ("pumped_storage_mw", "hydro_mw"):
+        if col in feature_cols:
+            if col not in fc.columns or fc[col].isna().all():
+                if df_historical is not None and col in df_historical.columns:
+                    hist = df_historical.dropna(subset=[col])
+                    dow_profile = hist.groupby(hist["date"].dt.dayofweek)[col].mean().to_dict()
+                else:
+                    dow_profile = {}
+                overall_mean = np.nanmean(list(dow_profile.values())) if dow_profile else 0.0
+                fc[col] = fc["date"].apply(lambda d: dow_profile.get(d.dayofweek, overall_mean))
+
+    # heating_dd: derived from forecast temperature — no estimation needed
+    if "heating_dd" in feature_cols and "heating_dd" not in fc.columns:
+        fc["heating_dd"] = (15.5 - fc["temperature_2m"]).clip(lower=0.0)
+
+    # is_bank_holiday: deterministic from date
+    if "is_bank_holiday" in feature_cols:
+        bh = _uk_holidays()
+        fc["is_bank_holiday"] = fc["date"].apply(lambda d: 1 if d.date() in bh else 0)
+
     # Interaction terms using mean of wind-farm sites as the wind signal
     wind_site_cols = [c for c in fc.columns if c.startswith("wind_") and c in feature_cols]
     uk_avg_wind = fc[wind_site_cols].mean(axis=1) if wind_site_cols else pd.Series(0.0, index=fc.index)
@@ -439,7 +493,7 @@ def predict_from_forecast(forecast_df: pd.DataFrame,
     fc["temp_x_wind"]  = fc["temperature_2m"] * uk_avg_wind
     fc["wind_x_solar"] = uk_avg_wind * solar_signal.fillna(0.0)
 
-    X_fc = fc[feature_cols].values
+    X_fc = fc[feature_cols].fillna(0.0).values
     preds = model.predict(scaler.transform(X_fc))
 
     result = forecast_df[["date"]].copy()
@@ -492,18 +546,22 @@ def build_halfhourly_df(date_from: date, date_to: date) -> pd.DataFrame:
         if row["demand_mw"] is not None
     }
 
-    # Build 30-min generation lookup (wind, gas, nuclear, imports)
+    # Build 30-min generation lookup (wind, gas, nuclear, pumped storage, hydro, imports)
     gen_rows = db.get_halfhourly_generation(date_from, date_to)
-    wind_gen_by_utc: dict[str, float] = {}
-    gas_gen_by_utc:  dict[str, float] = {}
-    nuclear_by_utc:  dict[str, float] = {}
-    imports_by_utc:  dict[str, float] = {}
+    wind_gen_by_utc:    dict[str, float] = {}
+    gas_gen_by_utc:     dict[str, float] = {}
+    nuclear_by_utc:     dict[str, float] = {}
+    pumped_storage_by_utc: dict[str, float] = {}
+    hydro_by_utc:       dict[str, float] = {}
+    imports_by_utc:     dict[str, float] = {}
     for row in gen_rows:
         dt_key = row["datetime_utc"]
-        if row["wind_mw"]    is not None: wind_gen_by_utc[dt_key] = row["wind_mw"]
-        if row["gas_mw"]     is not None: gas_gen_by_utc[dt_key]  = row["gas_mw"]
-        if row["nuclear_mw"] is not None: nuclear_by_utc[dt_key]  = row["nuclear_mw"]
-        if row["imports_mw"] is not None: imports_by_utc[dt_key]  = row["imports_mw"]
+        if row["wind_mw"]           is not None: wind_gen_by_utc[dt_key]    = row["wind_mw"]
+        if row["gas_mw"]            is not None: gas_gen_by_utc[dt_key]     = row["gas_mw"]
+        if row["nuclear_mw"]        is not None: nuclear_by_utc[dt_key]     = row["nuclear_mw"]
+        if row["pumped_storage_mw"] is not None: pumped_storage_by_utc[dt_key] = row["pumped_storage_mw"]
+        if row["hydro_mw"]          is not None: hydro_by_utc[dt_key]       = row["hydro_mw"]
+        if row["imports_mw"]        is not None: imports_by_utc[dt_key]     = row["imports_mw"]
 
     # Build commodity + wind-site lookup keyed by date
     _temp_daily = load_daily_df(date_from, date_to)
@@ -538,11 +596,14 @@ def build_halfhourly_df(date_from: date, date_to: date) -> pd.DataFrame:
             solar_gw = float(np.nan)
         # Demand and generation: UTC period-start matches Octopus convention directly
         utc_key    = dt_utc.strftime("%Y-%m-%dT%H:%M:%S")
-        demand_mw   = demand_by_utc.get(utc_key, float(np.nan))
-        wind_gen_mw = wind_gen_by_utc.get(utc_key, float(np.nan))
-        gas_gen_mw  = gas_gen_by_utc.get(utc_key, float(np.nan))
-        nuclear_mw  = nuclear_by_utc.get(utc_key, float(np.nan))
-        imports_mw  = imports_by_utc.get(utc_key, float(np.nan))
+        demand_mw         = demand_by_utc.get(utc_key, float(np.nan))
+        wind_gen_mw       = wind_gen_by_utc.get(utc_key, float(np.nan))
+        gas_gen_mw        = gas_gen_by_utc.get(utc_key, float(np.nan))
+        nuclear_mw        = nuclear_by_utc.get(utc_key, float(np.nan))
+        pumped_storage_mw = pumped_storage_by_utc.get(utc_key, float(np.nan))
+        hydro_mw          = hydro_by_utc.get(utc_key, float(np.nan))
+        imports_mw        = imports_by_utc.get(utc_key, float(np.nan))
+        is_bh = 1 if dt_local.date() in _uk_holidays() else 0
         records.append({
             "datetime_local":      dt_local,
             "datetime_key":        key,
@@ -550,6 +611,7 @@ def build_halfhourly_df(date_from: date, date_to: date) -> pd.DataFrame:
             "price_inc_vat":       row["price_inc_vat"],
             "is_peak":             row["is_peak"],
             "temperature_2m":      w["temperature_2m"],
+            "heating_dd":          max(0.0, 15.5 - w["temperature_2m"]),
             "shortwave_radiation": w["shortwave_radiation"],
             "precipitation":       w["precipitation"],
             "solar_gw":            solar_gw,
@@ -557,7 +619,10 @@ def build_halfhourly_df(date_from: date, date_to: date) -> pd.DataFrame:
             "wind_gen_mw":         wind_gen_mw,
             "gas_gen_mw":          gas_gen_mw,
             "nuclear_mw":          nuclear_mw,
+            "pumped_storage_mw":   pumped_storage_mw,
+            "hydro_mw":            hydro_mw,
             "imports_mw":          imports_mw,
+            "is_bank_holiday":     is_bh,
             "temp_x_wind":         w["temperature_2m"] * uk_avg_wind,
             "wind_x_solar":        uk_avg_wind * (solar_gw if not np.isnan(solar_gw) else 0.0),
             "brent_roll7":         d.get("brent_roll7"),
@@ -620,12 +685,16 @@ def predict_halfhourly_forecast(
 
     # Pre-compute estimated solar_gw from shortwave_radiation
     cols_needed  = feature_cols if feature_cols is not None else HH_FEATURES
-    need_solar    = "solar_gw"    in cols_needed
-    need_demand   = "demand_mw"   in cols_needed
-    need_wind_gen = "wind_gen_mw" in cols_needed
-    need_gas_gen  = "gas_gen_mw"  in cols_needed
-    need_nuclear  = "nuclear_mw"  in cols_needed
-    need_imports  = "imports_mw"  in cols_needed
+    need_solar         = "solar_gw"          in cols_needed
+    need_demand        = "demand_mw"         in cols_needed
+    need_wind_gen      = "wind_gen_mw"       in cols_needed
+    need_gas_gen       = "gas_gen_mw"        in cols_needed
+    need_nuclear       = "nuclear_mw"        in cols_needed
+    need_pumped        = "pumped_storage_mw" in cols_needed
+    need_hydro         = "hydro_mw"          in cols_needed
+    need_imports       = "imports_mw"        in cols_needed
+    need_heating_dd    = "heating_dd"        in cols_needed
+    need_bank_holiday  = "is_bank_holiday"   in cols_needed
     solar_est_by_hour: dict[str, float] = {}
     if need_solar and df_historical is not None and "shortwave_radiation" in forecast_hourly_df.columns:
         est_series = estimate_solar_from_radiation(
@@ -675,6 +744,21 @@ def predict_halfhourly_forecast(
     if need_nuclear and df_historical is not None and "nuclear_mw" in df_historical.columns:
         nuclear_mean_val = float(df_historical["nuclear_mw"].dropna().mean())
 
+    # Pumped storage and hydro profiles by (day_of_week, hour)
+    pumped_profile: dict = {}
+    hydro_profile:  dict = {}
+    for col, profile_dict, need in [
+        ("pumped_storage_mw", pumped_profile, need_pumped),
+        ("hydro_mw",          hydro_profile,  need_hydro),
+    ]:
+        if need and df_historical is not None and col in df_historical.columns:
+            d = df_historical.dropna(subset=[col]).copy()
+            d["_dow"]  = d["datetime_local"].dt.dayofweek
+            d["_hour"] = d["datetime_local"].dt.hour
+            profile_dict.update(d.groupby(["_dow", "_hour"])[col].mean().to_dict())
+
+    bh_set = _uk_holidays() if need_bank_holiday else set()
+
     records = []
     for _, row in forecast_hourly_df.iterrows():
         hour_key = row["datetime"].strftime("%Y-%m-%dT%H:00")
@@ -693,15 +777,20 @@ def predict_halfhourly_forecast(
             solar_signal = solar_gw if solar_gw is not None else row.get("shortwave_radiation", 0.0)
             dow  = dt_local.dayofweek if hasattr(dt_local, "dayofweek") else dt_local.weekday()
             hour = dt_local.hour
-            demand_mw    = demand_profile.get((dow, hour), np.nan) if need_demand else None
-            wind_gen_mw  = wind_gen_est_by_hour.get(hour_key, np.nan) if need_wind_gen else None
-            gas_gen_mw   = gas_gen_profile.get((dow, hour), np.nan) if need_gas_gen else None
-            nuclear_mw   = nuclear_mean_val if need_nuclear else None
-            imports_mw   = imports_profile.get((dow, hour), np.nan) if need_imports else None
+            demand_mw         = demand_profile.get((dow, hour), np.nan) if need_demand else None
+            wind_gen_mw       = wind_gen_est_by_hour.get(hour_key, np.nan) if need_wind_gen else None
+            gas_gen_mw        = gas_gen_profile.get((dow, hour), np.nan) if need_gas_gen else None
+            nuclear_mw        = nuclear_mean_val if need_nuclear else None
+            pumped_storage_mw = pumped_profile.get((dow, hour), np.nan) if need_pumped else None
+            hydro_mw          = hydro_profile.get((dow, hour), np.nan) if need_hydro else None
+            imports_mw        = imports_profile.get((dow, hour), np.nan) if need_imports else None
+            heating_dd        = max(0.0, 15.5 - row["temperature_2m"]) if need_heating_dd else None
+            is_bh             = (1 if dt_local.date() in bh_set else 0) if need_bank_holiday else None
             rec = {
                 "datetime_local":      dt_local,
                 "is_peak":             is_peak,
                 "temperature_2m":      row["temperature_2m"],
+                "heating_dd":          heating_dd,
                 "shortwave_radiation": row["shortwave_radiation"],
                 "precipitation":       row["precipitation"],
                 "solar_gw":            solar_gw,
@@ -709,7 +798,10 @@ def predict_halfhourly_forecast(
                 "wind_gen_mw":         wind_gen_mw,
                 "gas_gen_mw":          gas_gen_mw,
                 "nuclear_mw":          nuclear_mw,
+                "pumped_storage_mw":   pumped_storage_mw,
+                "hydro_mw":            hydro_mw,
                 "imports_mw":          imports_mw,
+                "is_bank_holiday":     is_bh,
                 "temp_x_wind":         row["temperature_2m"] * uk_avg_wind,
                 "wind_x_solar":        uk_avg_wind * (solar_signal or 0.0),
                 "brent_roll7":         (latest_commodity or {}).get("brent_roll7"),

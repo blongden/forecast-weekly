@@ -103,13 +103,41 @@ def init_db() -> None:
             );
 
             CREATE TABLE IF NOT EXISTS generation_halfhourly (
-                datetime_utc  TEXT PRIMARY KEY,  -- ISO-8601 UTC, period-start
-                wind_mw       REAL,              -- GB wind generation (onshore + offshore)
-                gas_mw        REAL,              -- CCGT + OCGT
-                nuclear_mw    REAL,              -- nuclear
-                imports_mw    REAL               -- net interconnector flows (positive = importing)
+                datetime_utc        TEXT PRIMARY KEY,  -- ISO-8601 UTC, period-start
+                wind_mw             REAL,              -- GB wind generation (onshore + offshore)
+                gas_mw              REAL,              -- CCGT + OCGT
+                nuclear_mw          REAL,              -- nuclear
+                pumped_storage_mw   REAL,              -- pumped hydro storage (PS) — price-reactive
+                hydro_mw            REAL,              -- run-of-river hydro (NPSHYD)
+                imports_mw          REAL               -- net interconnector flows (positive = importing)
             );
         """)
+        # Migrate existing DBs: add columns introduced after initial schema
+        _migrate_generation_schema(conn)
+
+
+def _migrate_generation_schema(conn: sqlite3.Connection) -> None:
+    """Add columns to generation_halfhourly that were introduced after the initial schema."""
+    new_cols = [
+        ("pumped_storage_mw", "REAL"),
+        ("hydro_mw",          "REAL"),
+    ]
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(generation_halfhourly)").fetchall()}
+    for col, typ in new_cols:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE generation_halfhourly ADD COLUMN {col} {typ}")
+
+
+def generation_needs_migration() -> bool:
+    """Return True if pumped_storage_mw exists but has no data (schema migrated, not yet re-fetched)."""
+    with get_conn() as conn:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(generation_halfhourly)").fetchall()}
+        if "pumped_storage_mw" not in cols:
+            return False
+        row = conn.execute(
+            "SELECT COUNT(*) FROM generation_halfhourly WHERE pumped_storage_mw IS NOT NULL"
+        ).fetchone()
+    return row[0] == 0
 
 
 # ── Prices ─────────────────────────────────────────────────────────────────────
@@ -537,8 +565,10 @@ def upsert_generation(rows: list[dict]) -> int:
     with get_conn() as conn:
         conn.executemany(
             """INSERT OR REPLACE INTO generation_halfhourly
-               (datetime_utc, wind_mw, gas_mw, nuclear_mw, imports_mw)
-               VALUES (:datetime_utc, :wind_mw, :gas_mw, :nuclear_mw, :imports_mw)""",
+               (datetime_utc, wind_mw, gas_mw, nuclear_mw,
+                pumped_storage_mw, hydro_mw, imports_mw)
+               VALUES (:datetime_utc, :wind_mw, :gas_mw, :nuclear_mw,
+                       :pumped_storage_mw, :hydro_mw, :imports_mw)""",
             rows,
         )
     return len(rows)
@@ -556,7 +586,8 @@ def get_halfhourly_generation(date_from: date, date_to: date) -> list:
     """Return half-hourly generation rows."""
     with get_conn() as conn:
         rows = conn.execute(
-            """SELECT datetime_utc, wind_mw, gas_mw, nuclear_mw, imports_mw
+            """SELECT datetime_utc, wind_mw, gas_mw, nuclear_mw,
+                      pumped_storage_mw, hydro_mw, imports_mw
                FROM generation_halfhourly
                WHERE DATE(datetime_utc) BETWEEN ? AND ?
                ORDER BY datetime_utc""",
@@ -566,14 +597,16 @@ def get_halfhourly_generation(date_from: date, date_to: date) -> list:
 
 
 def get_daily_generation(date_from: date, date_to: date) -> list:
-    """Return daily average generation mix (MW) as (date, wind_mw, gas_mw, nuclear_mw, imports_mw)."""
+    """Return daily average generation mix (MW)."""
     with get_conn() as conn:
         rows = conn.execute(
             """SELECT DATE(datetime_utc) AS date,
-                      AVG(wind_mw)    AS wind_mw,
-                      AVG(gas_mw)     AS gas_mw,
-                      AVG(nuclear_mw) AS nuclear_mw,
-                      AVG(imports_mw) AS imports_mw
+                      AVG(wind_mw)           AS wind_mw,
+                      AVG(gas_mw)            AS gas_mw,
+                      AVG(nuclear_mw)        AS nuclear_mw,
+                      AVG(pumped_storage_mw) AS pumped_storage_mw,
+                      AVG(hydro_mw)          AS hydro_mw,
+                      AVG(imports_mw)        AS imports_mw
                FROM generation_halfhourly
                WHERE DATE(datetime_utc) BETWEEN ? AND ?
                GROUP BY DATE(datetime_utc)

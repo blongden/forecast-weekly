@@ -2,10 +2,12 @@
 Elexon BMRS FUELHH — half-hourly GB generation by fuel type.
 
 Aggregated per slot into:
-  wind_mw    — GB wind generation (onshore + offshore)
-  gas_mw     — gas (CCGT + OCGT)
-  nuclear_mw — nuclear (relatively constant; ~6–8 GW)
-  imports_mw — net interconnector flows (positive = UK importing)
+  wind_mw             — GB wind generation (onshore + offshore)
+  gas_mw              — gas (CCGT + OCGT)
+  nuclear_mw          — nuclear (relatively constant; ~6–8 GW)
+  pumped_storage_mw   — pumped hydro (PS) — price-reactive storage
+  hydro_mw            — run-of-river hydro (NPSHYD)
+  imports_mw          — net interconnector flows (positive = UK importing)
 
 Max 7 days per FUELHH request.
 startTime is UTC period-start, matching Octopus and demand_halfhourly conventions.
@@ -58,7 +60,8 @@ def _parse_response(payload: dict) -> list[dict]:
     """
     # Group records by UTC period-start datetime
     slots: dict[str, dict] = defaultdict(lambda: {
-        "wind_mw": 0.0, "gas_mw": 0.0, "nuclear_mw": 0.0, "imports_mw": 0.0
+        "wind_mw": 0.0, "gas_mw": 0.0, "nuclear_mw": 0.0,
+        "pumped_storage_mw": 0.0, "hydro_mw": 0.0, "imports_mw": 0.0,
     })
 
     for rec in payload.get("data", []):
@@ -78,6 +81,10 @@ def _parse_response(payload: dict) -> list[dict]:
             slots[dt_str]["gas_mw"] += mw
         elif fuel == "NUCLEAR":
             slots[dt_str]["nuclear_mw"] += mw
+        elif fuel == "PS":
+            slots[dt_str]["pumped_storage_mw"] += mw
+        elif fuel == "NPSHYD":
+            slots[dt_str]["hydro_mw"] += mw
         elif fuel in _INT_FUELS:
             slots[dt_str]["imports_mw"] += mw
 
@@ -85,7 +92,11 @@ def _parse_response(payload: dict) -> list[dict]:
 
 
 def missing_supply_ranges(date_from: date, date_to: date) -> list[tuple[date, date]]:
-    """Return date ranges not yet stored in generation_halfhourly."""
+    """Return date ranges not yet stored in generation_halfhourly.
+
+    Also returns the full stored range if the schema was recently migrated
+    (i.e. pumped_storage_mw column exists but has no data yet).
+    """
     min_dt, max_dt = db.get_generation_date_range()
 
     if min_dt is None:
@@ -93,6 +104,12 @@ def missing_supply_ranges(date_from: date, date_to: date) -> list[tuple[date, da
 
     stored_min = date.fromisoformat(min_dt[:10])
     stored_max = date.fromisoformat(max_dt[:10])
+
+    # If new columns are empty the stored data pre-dates the schema migration —
+    # re-fetch the entire stored range to populate pumped_storage_mw / hydro_mw.
+    if db.generation_needs_migration():
+        safe_to = min(stored_max, date.today() - timedelta(days=1))
+        return [(stored_min, safe_to)]
 
     gaps = []
     if date_from < stored_min:
