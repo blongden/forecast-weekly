@@ -1,7 +1,19 @@
-.PHONY: all update analyse status install help
+.PHONY: all update analyse status install help \
+        build pod-all pod-update pod-analyse pod-status pod-shell \
+        cdk-install cdk-synth cdk-deploy cdk-destroy
 
-PYTHON := python3
+PYTHON := .venv/bin/python3
 MAIN   := $(PYTHON) main.py
+
+IMAGE  := energy-analysis
+# Mount the local DB and outputs into the container so data persists
+POD    := podman run --rm \
+            -v $(PWD)/energy.db:/data/energy.db \
+            -v $(PWD)/charts:/data/charts \
+            -v $(PWD)/index.html:/data/index.html \
+            $(IMAGE)
+
+## ── Local (direct) ────────────────────────────────────────────────────────────
 
 ## all      : fetch any missing data, run analysis, and save charts (default)
 all:
@@ -19,10 +31,59 @@ analyse:
 status:
 	$(MAIN) status
 
-## install  : install Python dependencies
+## install  : create virtualenv and install Python dependencies
 install:
-	pip3 install --break-system-packages requests pandas numpy matplotlib scikit-learn scipy plotly yfinance
+	python3 -m venv .venv
+	.venv/bin/pip install -r requirements.txt
 
-## help     : list available targets
+## ── Container (Podman) ────────────────────────────────────────────────────────
+
+## build        : build the container image
+build:
+	podman build -t $(IMAGE) .
+
+## pod-all      : run full update + analyse cycle inside the container
+pod-all: build
+	$(POD) python main.py all
+
+## pod-update   : fetch data only, inside the container
+pod-update: build
+	$(POD) python main.py update
+
+## pod-analyse  : run analysis only, inside the container
+pod-analyse: build
+	$(POD) python main.py analyse
+
+## pod-status   : show DB status from inside the container
+pod-status: build
+	$(POD) python main.py status
+
+## pod-shell    : open a shell inside the container (useful for debugging)
+pod-shell: build
+	podman run --rm -it \
+	  -v $(PWD)/energy.db:/data/energy.db \
+	  -v $(PWD)/charts:/data/charts \
+	  -v $(PWD)/index.html:/data/index.html \
+	  $(IMAGE) /bin/bash
+
+## ── AWS (CDK) ────────────────────────────────────────────────────────────────
+
+## cdk-install  : install CDK Python dependencies
+cdk-install:
+	cd infra && pip install -r requirements.txt
+
+## cdk-synth    : synthesise CloudFormation template (dry run)
+cdk-synth:
+	cd infra && cdk synth
+
+## cdk-deploy   : deploy all AWS infrastructure
+cdk-deploy:
+	cd infra && cdk deploy --require-approval broadening
+
+## cdk-destroy  : tear down all AWS infrastructure
+cdk-destroy:
+	cd infra && cdk destroy
+
+## help         : list available targets
 help:
 	@grep "^##" Makefile | sed 's/^## /  /'

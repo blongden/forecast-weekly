@@ -1,0 +1,152 @@
+{
+  "/EnergyAnalysis/BootstrapVersion": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "BootstrapVersion"
+    }
+  ],
+  "/EnergyAnalysis/CheckBootstrapVersion": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CheckBootstrapVersion"
+    }
+  ],
+  "/EnergyAnalysis/Efs/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "Efs9E8BF36B"
+    }
+  ],
+  "/EnergyAnalysis/Efs/EfsMountTarget1": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "EfsEfsMountTarget195B2DD2E"
+    }
+  ],
+  "/EnergyAnalysis/Efs/EfsMountTarget2": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "EfsEfsMountTarget2315C927F"
+    }
+  ],
+  "/EnergyAnalysis/Efs/EfsMountTarget3": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "EfsEfsMountTarget36646B9A0"
+    }
+  ],
+  "/EnergyAnalysis/Dashboard/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "Dashboard9E4231ED"
+    }
+  ],
+  "/EnergyAnalysis/Cdn/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "Cdn9963B1AD"
+    }
+  ],
+  "/EnergyAnalysis/ApiKeys/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ApiKeys3BB3983D"
+    }
+  ],
+  "/EnergyAnalysis/Cluster/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ClusterEB0386A7"
+    }
+  ],
+  "/EnergyAnalysis/TaskDef/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "TaskDef54694570"
+    }
+  ],
+  "/EnergyAnalysis/DailyRun/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "DailyRunDEF7747D"
+    }
+  ],
+  "/EnergyAnalysis/CDKMetadata/Default": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CDKMetadata"
+    }
+  ],
+  "/EnergyAnalysis/Efs/EfsSecurityGroup/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "EfsEfsSecurityGroup6F40EA3B"
+    }
+  ],
+  "/EnergyAnalysis/Efs/DataAP/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "EfsDataAPA971D870"
+    }
+  ],
+  "/EnergyAnalysis/Dashboard/Policy/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "DashboardPolicyE3C9AF48"
+    }
+  ],
+  "/EnergyAnalysis/TaskDef/TaskRole/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "TaskDefTaskRole1EDB4A67"
+    }
+  ],
+  "/EnergyAnalysis/TaskDef/ExecutionRole/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "TaskDefExecutionRoleB4775C97"
+    }
+  ],
+  "/EnergyAnalysis/TaskDef/EventsRole/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "TaskDefEventsRoleFB3B67B8"
+    }
+  ],
+  "/EnergyAnalysis/TaskDef/SecurityGroup/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "TaskDefSecurityGroupD50E7CF0"
+    }
+  ],
+  "/EnergyAnalysis/Cdn/Origin1/S3OriginAccessControl/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CdnOrigin1S3OriginAccessControl6AC0AEFC"
+    }
+  ],
+  "/EnergyAnalysis/TaskDef/TaskRole/DefaultPolicy/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "TaskDefTaskRoleDefaultPolicyA592CB18"
+    }
+  ],
+  "/EnergyAnalysis/TaskDef/App/LogGroup/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "TaskDefAppLogGroup43DBCB9C"
+    }
+  ],
+  "/EnergyAnalysis/TaskDef/ExecutionRole/DefaultPolicy/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "TaskDefExecutionRoleDefaultPolicy0DBB737A"
+    }
+  ],
+  "/EnergyAnalysis/TaskDef/EventsRole/DefaultPolicy/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "TaskDefEventsRoleDefaultPolicyA124E85B"
+    }
+  ]
+}

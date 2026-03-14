@@ -56,7 +56,10 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS commodity_prices (
                 date             TEXT PRIMARY KEY,  -- YYYY-MM-DD
                 brent_crude_usd  REAL,              -- USD per barrel (Brent)
-                gas_ttf_eur      REAL               -- EUR per MWh (TTF European gas)
+                gas_ttf_eur      REAL,              -- EUR per MWh (TTF European gas)
+                gbpusd           REAL,              -- GBP/USD exchange rate
+                usd_index        REAL,              -- US Dollar Index (DXY)
+                carbon_ets_gbp   REAL               -- EU ETS carbon price (GBP/tonne)
             );
 
             CREATE TABLE IF NOT EXISTS fetch_log (
@@ -90,11 +93,19 @@ def init_db() -> None:
             );
 
             CREATE TABLE IF NOT EXISTS daily_predictions (
-                predicted_on            TEXT NOT NULL,  -- YYYY-MM-DD date prediction was made
-                date                    TEXT NOT NULL,  -- YYYY-MM-DD date being predicted
-                predicted_ex_vat_p_kwh  REAL,
-                predicted_inc_vat_p_kwh REAL,
+                predicted_on         TEXT NOT NULL,  -- YYYY-MM-DD date prediction was made
+                date                 TEXT NOT NULL,  -- YYYY-MM-DD date being predicted
+                predicted_epex_p_kwh REAL,           -- predicted EPEX wholesale price (p/kWh)
                 PRIMARY KEY (predicted_on, date)
+            );
+
+            CREATE TABLE IF NOT EXISTS halfhourly_predictions (
+                predicted_on         TEXT NOT NULL,  -- YYYY-MM-DD date prediction was made
+                datetime_utc         TEXT NOT NULL,  -- ISO-8601 UTC slot start
+                predicted_epex_p_kwh REAL,           -- blended ensemble price (p/kWh)
+                pred_q10             REAL,           -- 10th percentile (p/kWh)
+                pred_q90             REAL,           -- 90th percentile (p/kWh)
+                PRIMARY KEY (predicted_on, datetime_utc)
             );
 
             CREATE TABLE IF NOT EXISTS demand_halfhourly (
@@ -117,9 +128,80 @@ def init_db() -> None:
                 hydro_mw            REAL,              -- run-of-river hydro (NPSHYD)
                 imports_mw          REAL               -- net interconnector flows (positive = importing)
             );
+
+            CREATE TABLE IF NOT EXISTS gas_storage (
+                date        TEXT PRIMARY KEY,  -- YYYY-MM-DD
+                eu_gas_pct  REAL,              -- EU aggregate fill level (%)
+                eu_gas_twh  REAL,              -- EU working gas in storage (TWh)
+                gb_gas_pct  REAL,              -- GB fill level (%)
+                gb_gas_twh  REAL               -- GB working gas in storage (TWh)
+            );
+
+            CREATE TABLE IF NOT EXISTS oil_inventory (
+                date               TEXT PRIMARY KEY,  -- YYYY-MM-DD (weekly, EIA release date)
+                us_crude_stocks_mb REAL               -- US commercial crude stocks (million barrels)
+            );
+
+            CREATE TABLE IF NOT EXISTS weather_forecast_archive (
+                fetch_date          TEXT NOT NULL,   -- YYYY-MM-DD: date the forecast was made
+                target_date         TEXT NOT NULL,   -- YYYY-MM-DD: date being forecast
+                lead_days           INTEGER NOT NULL, -- target_date - fetch_date in days
+                temperature_2m      REAL,            -- UK avg forecast temperature (°C)
+                shortwave_radiation REAL,            -- UK avg forecast solar radiation (W/m²)
+                precipitation       REAL,            -- UK avg forecast precipitation (mm)
+                PRIMARY KEY (fetch_date, target_date)
+            );
+
+            CREATE TABLE IF NOT EXISTS wind_site_forecast_archive (
+                fetch_date  TEXT NOT NULL,   -- YYYY-MM-DD: date the forecast was made
+                target_date TEXT NOT NULL,   -- YYYY-MM-DD: date being forecast
+                site_id     TEXT NOT NULL,   -- key from config.WIND_SITES
+                wind_speed  REAL,            -- daily avg 100m wind speed forecast (km/h)
+                PRIMARY KEY (fetch_date, target_date, site_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS system_prices (
+                datetime_utc       TEXT PRIMARY KEY,
+                system_buy_price   REAL,
+                system_sell_price  REAL,
+                net_imbalance_mw   REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS entsoe_scheduled_exchanges (
+                datetime_utc   TEXT NOT NULL,   -- ISO-8601 UTC, hourly resolution
+                country_from   TEXT NOT NULL,   -- e.g. 'FR', 'BE', 'NL', 'NO_2', 'IE_SEM', 'DK_1'
+                country_to     TEXT NOT NULL,   -- e.g. 'GB' for imports, reverse for exports
+                scheduled_mw   REAL,            -- MW scheduled in this direction
+                PRIMARY KEY (datetime_utc, country_from, country_to)
+            );
+
+            CREATE TABLE IF NOT EXISTS entsoe_unavailability (
+                date           TEXT NOT NULL,   -- YYYY-MM-DD
+                fuel_type      TEXT NOT NULL,   -- 'nuclear', 'gas', 'coal', 'wind', 'other'
+                unavailable_mw REAL,            -- sum of unavailable nominal power (MW)
+                PRIMARY KEY (date, fuel_type)
+            );
         """)
         # Migrate existing DBs: add columns introduced after initial schema
         _migrate_generation_schema(conn)
+        _migrate_predictions_schema(conn)
+        _migrate_commodity_schema(conn)
+
+
+def _migrate_predictions_schema(conn: sqlite3.Connection) -> None:
+    """Drop and recreate daily_predictions if it has the old Agile-schema columns."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(daily_predictions)").fetchall()}
+    if "predicted_ex_vat_p_kwh" in cols:
+        # Old Agile predictions are invalid after EPEX model switch — drop and recreate
+        conn.execute("DROP TABLE daily_predictions")
+        conn.execute("""
+            CREATE TABLE daily_predictions (
+                predicted_on         TEXT NOT NULL,
+                date                 TEXT NOT NULL,
+                predicted_epex_p_kwh REAL,
+                PRIMARY KEY (predicted_on, date)
+            )
+        """)
 
 
 def _migrate_generation_schema(conn: sqlite3.Connection) -> None:
@@ -132,6 +214,31 @@ def _migrate_generation_schema(conn: sqlite3.Connection) -> None:
     for col, typ in new_cols:
         if col not in existing:
             conn.execute(f"ALTER TABLE generation_halfhourly ADD COLUMN {col} {typ}")
+
+
+def _migrate_commodity_schema(conn: sqlite3.Connection) -> None:
+    """Add gbpusd, usd_index, and carbon_ets_gbp columns to commodity_prices if missing."""
+    new_cols = [
+        ("gbpusd",          "REAL"),
+        ("usd_index",       "REAL"),
+        ("carbon_ets_gbp",  "REAL"),
+    ]
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(commodity_prices)").fetchall()}
+    for col, typ in new_cols:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE commodity_prices ADD COLUMN {col} {typ}")
+
+
+def commodity_needs_currency_data() -> bool:
+    """Return True if gbpusd column exists but has no data (schema migrated, not yet re-fetched)."""
+    with get_conn() as conn:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(commodity_prices)").fetchall()}
+        if "gbpusd" not in cols:
+            return False
+        row = conn.execute(
+            "SELECT COUNT(*) FROM commodity_prices WHERE gbpusd IS NOT NULL"
+        ).fetchone()
+    return row[0] == 0
 
 
 def generation_needs_migration() -> bool:
@@ -421,8 +528,9 @@ def upsert_commodity(rows: list[dict]) -> int:
         return 0
     with get_conn() as conn:
         conn.executemany(
-            """INSERT OR REPLACE INTO commodity_prices (date, brent_crude_usd, gas_ttf_eur)
-               VALUES (:date, :brent_crude_usd, :gas_ttf_eur)""",
+            """INSERT OR REPLACE INTO commodity_prices
+               (date, brent_crude_usd, gas_ttf_eur, gbpusd, usd_index, carbon_ets_gbp)
+               VALUES (:date, :brent_crude_usd, :gas_ttf_eur, :gbpusd, :usd_index, :carbon_ets_gbp)""",
             rows,
         )
     return len(rows)
@@ -439,7 +547,7 @@ def get_commodity_date_range() -> tuple[str | None, str | None]:
 def get_commodity_prices(date_from: date, date_to: date):
     with get_conn() as conn:
         rows = conn.execute(
-            """SELECT date, brent_crude_usd, gas_ttf_eur
+            """SELECT date, brent_crude_usd, gas_ttf_eur, gbpusd, usd_index, carbon_ets_gbp
                FROM commodity_prices
                WHERE date BETWEEN ? AND ?
                ORDER BY date""",
@@ -450,7 +558,7 @@ def get_commodity_prices(date_from: date, date_to: date):
 
 # ── Raw half-hourly / hourly fetches (for half-hourly model) ──────────────────
 def get_halfhourly_prices(date_from: date, date_to: date):
-    """Return raw half-hourly price rows."""
+    """Return actual Octopus Agile half-hourly price rows from the prices table."""
     with get_conn() as conn:
         rows = conn.execute(
             """SELECT datetime, price_ex_vat, price_inc_vat, wholesale_price, is_peak
@@ -484,8 +592,22 @@ def upsert_daily_predictions(predicted_on: date, rows: list[dict]) -> int:
     with get_conn() as conn:
         conn.executemany(
             """INSERT OR REPLACE INTO daily_predictions
-               (predicted_on, date, predicted_ex_vat_p_kwh, predicted_inc_vat_p_kwh)
-               VALUES (:predicted_on, :date, :predicted_ex_vat_p_kwh, :predicted_inc_vat_p_kwh)""",
+               (predicted_on, date, predicted_epex_p_kwh)
+               VALUES (:predicted_on, :date, :predicted_epex_p_kwh)""",
+            [{"predicted_on": str(predicted_on), **r} for r in rows],
+        )
+    return len(rows)
+
+
+def upsert_halfhourly_predictions(predicted_on: date, rows: list[dict]) -> int:
+    """Store half-hourly forecast rows keyed by (predicted_on, datetime_utc)."""
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO halfhourly_predictions
+               (predicted_on, datetime_utc, predicted_epex_p_kwh, pred_q10, pred_q90)
+               VALUES (:predicted_on, :datetime_utc, :predicted_epex_p_kwh, :pred_q10, :pred_q90)""",
             [{"predicted_on": str(predicted_on), **r} for r in rows],
         )
     return len(rows)
@@ -500,11 +622,10 @@ def get_verifiable_predictions(as_of: date) -> list:
         rows = conn.execute(
             """
             SELECT p.predicted_on, p.date,
-                   p.predicted_ex_vat_p_kwh, p.predicted_inc_vat_p_kwh,
-                   AVG(pr.price_ex_vat)  AS actual_ex_vat,
-                   AVG(pr.price_inc_vat) AS actual_inc_vat
+                   p.predicted_epex_p_kwh,
+                   AVG(m.price_gbp_mwh) * 0.1 AS actual_epex_p_kwh
             FROM daily_predictions p
-            JOIN prices pr ON DATE(pr.datetime) = p.date
+            JOIN market_index_halfhourly m ON DATE(m.datetime_utc) = p.date
             WHERE p.date <= ?
             GROUP BY p.predicted_on, p.date
             ORDER BY p.date, p.predicted_on
@@ -671,6 +792,295 @@ def get_daily_midprice(date_from: date, date_to: date) -> list:
             (str(date_from), str(date_to)),
         ).fetchall()
     return rows
+
+
+# ── Forecast archive ───────────────────────────────────────────────────────────
+def upsert_weather_forecast_archive(rows: list[dict]) -> int:
+    """Store daily UK-avg weather forecasts keyed by (fetch_date, target_date)."""
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO weather_forecast_archive
+               (fetch_date, target_date, lead_days,
+                temperature_2m, shortwave_radiation, precipitation)
+               VALUES (:fetch_date, :target_date, :lead_days,
+                       :temperature_2m, :shortwave_radiation, :precipitation)""",
+            rows,
+        )
+    return len(rows)
+
+
+def upsert_wind_site_forecast_archive(rows: list[dict]) -> int:
+    """Store daily per-site wind speed forecasts keyed by (fetch_date, target_date, site_id)."""
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO wind_site_forecast_archive
+               (fetch_date, target_date, site_id, wind_speed)
+               VALUES (:fetch_date, :target_date, :site_id, :wind_speed)""",
+            rows,
+        )
+    return len(rows)
+
+
+def get_weather_forecast_archive(target_date_from: date, target_date_to: date) -> list:
+    """Return all archived weather forecasts for a target date range."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT fetch_date, target_date, lead_days,
+                      temperature_2m, shortwave_radiation, precipitation
+               FROM weather_forecast_archive
+               WHERE target_date BETWEEN ? AND ?
+               ORDER BY target_date, fetch_date""",
+            (str(target_date_from), str(target_date_to)),
+        ).fetchall()
+    return rows
+
+
+def get_wind_site_forecast_archive(target_date_from: date, target_date_to: date) -> list:
+    """Return all archived wind site forecasts for a target date range."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT fetch_date, target_date, site_id, wind_speed
+               FROM wind_site_forecast_archive
+               WHERE target_date BETWEEN ? AND ?
+               ORDER BY target_date, fetch_date, site_id""",
+            (str(target_date_from), str(target_date_to)),
+        ).fetchall()
+    return rows
+
+
+def get_forecast_archive_fetch_dates() -> list[str]:
+    """Return distinct fetch_dates in the weather_forecast_archive."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT fetch_date FROM weather_forecast_archive ORDER BY fetch_date"
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+# ── Gas storage (GIE AGSI+) ──────────────────────────────────────────────────
+def upsert_gas_storage(rows: list[dict]) -> int:
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO gas_storage
+               (date, eu_gas_pct, eu_gas_twh, gb_gas_pct, gb_gas_twh)
+               VALUES (:date, :eu_gas_pct, :eu_gas_twh, :gb_gas_pct, :gb_gas_twh)""",
+            rows,
+        )
+    return len(rows)
+
+
+def get_gas_storage_date_range() -> tuple[str | None, str | None]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT MIN(date), MAX(date) FROM gas_storage"
+        ).fetchone()
+    return row[0], row[1]
+
+
+def get_gas_storage(date_from: date, date_to: date):
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT date, eu_gas_pct, eu_gas_twh, gb_gas_pct, gb_gas_twh
+               FROM gas_storage
+               WHERE date BETWEEN ? AND ?
+               ORDER BY date""",
+            (str(date_from), str(date_to)),
+        ).fetchall()
+    return rows
+
+
+# ── Oil inventory (EIA) ─────────────────────────────────────────────────────
+def upsert_oil_inventory(rows: list[dict]) -> int:
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO oil_inventory
+               (date, us_crude_stocks_mb)
+               VALUES (:date, :us_crude_stocks_mb)""",
+            rows,
+        )
+    return len(rows)
+
+
+def get_oil_inventory_date_range() -> tuple[str | None, str | None]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT MIN(date), MAX(date) FROM oil_inventory"
+        ).fetchone()
+    return row[0], row[1]
+
+
+def get_oil_inventory(date_from: date, date_to: date):
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT date, us_crude_stocks_mb
+               FROM oil_inventory
+               WHERE date BETWEEN ? AND ?
+               ORDER BY date""",
+            (str(date_from), str(date_to)),
+        ).fetchall()
+    return rows
+
+
+# ── ENTSO-E scheduled exchanges & unavailability ──────────────────────────────
+
+def upsert_entsoe_exchanges(rows: list[dict]) -> int:
+    """Store hourly scheduled exchange rows: {datetime_utc, country_from, country_to, scheduled_mw}."""
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO entsoe_scheduled_exchanges
+               (datetime_utc, country_from, country_to, scheduled_mw)
+               VALUES (:datetime_utc, :country_from, :country_to, :scheduled_mw)""",
+            rows,
+        )
+    return len(rows)
+
+
+def upsert_entsoe_unavailability(rows: list[dict]) -> int:
+    """Store daily unavailability rows: {date, fuel_type, unavailable_mw}."""
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO entsoe_unavailability
+               (date, fuel_type, unavailable_mw)
+               VALUES (:date, :fuel_type, :unavailable_mw)""",
+            rows,
+        )
+    return len(rows)
+
+
+def get_entsoe_exchanges_date_range():
+    """Return (min_date, max_date) of scheduled exchange data, or (None, None)."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT MIN(DATE(datetime_utc)), MAX(DATE(datetime_utc)) FROM entsoe_scheduled_exchanges"
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None, None
+    return row[0], row[1]
+
+
+def get_entsoe_unavailability_date_range():
+    """Return (min_date, max_date) of unavailability data, or (None, None)."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT MIN(date), MAX(date) FROM entsoe_unavailability"
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None, None
+    return row[0], row[1]
+
+
+def get_daily_scheduled_imports(date_from: date, date_to: date) -> list:
+    """Return daily net scheduled imports (MW) into GB, aggregated across all interconnectors."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT DATE(datetime_utc) AS date,
+                      (SUM(CASE WHEN country_to = 'GB' THEN scheduled_mw ELSE 0 END) -
+                       SUM(CASE WHEN country_from = 'GB' THEN scheduled_mw ELSE 0 END))
+                       / COUNT(DISTINCT datetime_utc) AS net_scheduled_imports_mw
+               FROM entsoe_scheduled_exchanges
+               WHERE DATE(datetime_utc) BETWEEN ? AND ?
+               GROUP BY DATE(datetime_utc)
+               ORDER BY date""",
+            (str(date_from), str(date_to)),
+        ).fetchall()
+    return rows
+
+
+def get_hourly_scheduled_imports(date_from: date, date_to: date) -> list:
+    """Return hourly net scheduled imports (MW) into GB for HH model."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT datetime_utc,
+                      SUM(CASE WHEN country_to = 'GB' THEN scheduled_mw ELSE 0 END) -
+                      SUM(CASE WHEN country_from = 'GB' THEN scheduled_mw ELSE 0 END) AS net_mw
+               FROM entsoe_scheduled_exchanges
+               WHERE DATE(datetime_utc) BETWEEN ? AND ?
+               GROUP BY datetime_utc
+               ORDER BY datetime_utc""",
+            (str(date_from), str(date_to)),
+        ).fetchall()
+    return rows
+
+
+def get_daily_unavailability(date_from: date, date_to: date) -> list:
+    """Return daily unavailability by fuel type: (date, fuel_type, unavailable_mw)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT date, fuel_type, unavailable_mw
+               FROM entsoe_unavailability
+               WHERE date BETWEEN ? AND ?
+               ORDER BY date, fuel_type""",
+            (str(date_from), str(date_to)),
+        ).fetchall()
+    return rows
+
+
+# ── System prices (Elexon BMRS cash-out / imbalance) ────────────────────────
+
+def upsert_system_prices(rows: list[dict]) -> int:
+    """Insert or replace half-hourly system price rows. Returns rows written."""
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT INTO system_prices (datetime_utc, system_buy_price, system_sell_price, net_imbalance_mw)
+               VALUES (:datetime_utc, :system_buy_price, :system_sell_price, :net_imbalance_mw)
+               ON CONFLICT(datetime_utc) DO UPDATE SET
+                   system_buy_price  = excluded.system_buy_price,
+                   system_sell_price = excluded.system_sell_price,
+                   net_imbalance_mw  = excluded.net_imbalance_mw""",
+            rows,
+        )
+    return len(rows)
+
+
+def get_sysprice_date_range() -> tuple[str | None, str | None]:
+    """Return (min_datetime, max_datetime) of stored system prices, or (None, None)."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT MIN(datetime_utc), MAX(datetime_utc) FROM system_prices"
+        ).fetchone()
+    return (row[0], row[1]) if row else (None, None)
+
+
+def get_daily_system_prices(date_from: date, date_to: date) -> list:
+    """Return daily avg system buy price and mean absolute imbalance volume."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT DATE(datetime_utc) as date,
+                      AVG(system_buy_price) as avg_system_price,
+                      AVG(ABS(net_imbalance_mw)) as avg_abs_imbalance_mw
+               FROM system_prices
+               WHERE DATE(datetime_utc) BETWEEN ? AND ?
+               GROUP BY DATE(datetime_utc)
+               ORDER BY date""",
+            (str(date_from), str(date_to)),
+        ).fetchall()
+
+
+def get_halfhourly_system_prices(date_from: date, date_to: date) -> list:
+    """Return half-hourly system prices as list of dicts."""
+    with get_conn() as conn:
+        conn.row_factory = lambda c, r: dict(zip([col[0] for col in c.description], r))
+        return conn.execute(
+            """SELECT datetime_utc, system_buy_price, system_sell_price, net_imbalance_mw
+               FROM system_prices
+               WHERE DATE(datetime_utc) BETWEEN ? AND ?
+               ORDER BY datetime_utc""",
+            (str(date_from), str(date_to)),
+        ).fetchall()
 
 
 # ── Fetch log ──────────────────────────────────────────────────────────────────

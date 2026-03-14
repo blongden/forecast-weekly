@@ -11,18 +11,26 @@ energy_analysis/
 ├── main.py               # CLI entry point (update / analyse / status)
 ├── requirements.txt
 ├── Makefile
+├── Dockerfile
 ├── energy.db             # SQLite database (auto-created on first run)
-├── dashboard.html        # Generated interactive dashboard
+├── index.html            # Generated interactive dashboard
 ├── charts/               # Generated static PNG charts
+├── MODEL.md              # Model documentation
 └── app/
-    ├── config.py         # Constants: region, sites, paths, tariff coefficients
+    ├── config.py         # Constants: sites, paths, network charges, tariff params
     ├── db.py             # SQLite schema + all query functions
-    ├── octopus.py        # Octopus Agile API client
+    ├── midprice.py       # Elexon BMRS APXMIDP EPEX price client
     ├── weather.py        # Open-Meteo historical + forecast client
     ├── pvlive.py         # Sheffield Solar PV_Live API client
     ├── demand.py         # Elexon BMRS INDO demand client
-    ├── gas.py            # Yahoo Finance commodity price client
-    ├── analysis.py       # Correlations, regression models, backtest, prediction
+    ├── supply.py         # Elexon BMRS FUELHH generation mix client
+    ├── gas.py            # Yahoo Finance commodity + GIE gas storage + EIA oil client
+    ├── analysis.py       # Re-export shim (imports from features/models/backtest/tariff)
+    ├── features.py       # Feature dictionaries, data loading, feature engineering
+    ├── models.py         # Ridge + LightGBM fitting, prediction, ensemble blending
+    ├── backtest.py       # Hold-out tests, walk-forward CV, lead-time analysis
+    ├── tariff.py         # Time-of-use tariff design (band collapsing)
+    ├── simulation.py     # Customer behaviour simulation (tariff comparison)
     ├── charts.py         # Matplotlib static PNG generation
     └── dashboard.py      # Plotly HTML dashboard generation
 ```
@@ -31,42 +39,63 @@ energy_analysis/
 
 ## Data sources and APIs
 
-### Octopus Energy API
+### Elexon BMRS — EPEX Day-Ahead Prices
 
-- **Endpoint:** `https://api.octopus.energy/v1/products/AGILE-24-10-01/electricity-tariffs/E-1R-AGILE-24-10-01-N/standard-unit-rates/`
-- **Tariff:** AGILE-24-10-01, Region N (Southern Scotland)
-- **Resolution:** Half-hourly (48 slots/day), published ~16:00 for the following day
-- **Fields stored:** `price_inc_vat`, `price_ex_vat` (÷1.05), `wholesale_price`, `is_peak`
+- **Endpoint:** `https://data.elexon.co.uk/bmrs/api/v1/balancing/settlement/market-index-data-prices`
+- **Dataset:** APXMIDP — Market Index Data (EPEX SPOT GB day-ahead clearing price)
+- **Resolution:** Half-hourly (48 slots/day), £/MWh converted to p/kWh (×0.1)
+- **Fields stored:** `datetime_utc`, `price_gbp_mwh`, `volume_mwh`
 
 ### Open-Meteo (weather)
 
 - **Historical:** `https://archive-api.open-meteo.com/v1/archive` — ~2-day lag
 - **Forecast:** `https://api.open-meteo.com/v1/forecast` — up to 16 days
-- **Sites:** 6 UK cities averaged (Edinburgh, Newcastle, Manchester, Birmingham, London, Cardiff)
+- **UK weather sites:** 6 UK cities averaged (Edinburgh, Newcastle, Manchester, Birmingham, London, Cardiff)
 - **Variables:** `temperature_2m`, `shortwave_radiation`, `precipitation` per site
-- **Wind:** Fetched at 100m hub height (`wind_speed_100m`) for each offshore/onshore wind farm site only
+- **Wind sites:** 100m hub height (`wind_speed_100m`) at 6 offshore/onshore wind farm locations
 
 ### Sheffield Solar PV_Live
 
 - **Endpoint:** `https://api.pvlive.uk/pvlive/api/v4/gsp/0` (GB national, GSP 0)
-- **Resolution:** Half-hourly (30-min slots), UTC period-**end** timestamps
-- **Fields stored:** `generation_mw` — GB national solar generation estimate
-- **Timestamp note:** PV_Live uses period-end convention ("00:30" = 00:00–00:30 slot). A +30 min shift is applied when joining to Octopus data which uses period-start.
+- **Resolution:** Half-hourly, UTC period-**end** timestamps
+- **Timestamp note:** PV_Live uses period-end convention ("00:30" = 00:00-00:30 slot). A +30 min shift is applied when joining to EPEX data which uses period-start.
 
 ### Elexon BMRS — GB Demand
 
 - **Endpoint:** `https://data.elexon.co.uk/bmrs/api/v1/demand/outturn`
-- **Dataset:** INDO (Initial National Demand Outturn) — includes embedded/distributed generation
-- **Resolution:** Half-hourly, UTC period-start timestamps (aligns directly with Octopus)
-- **Max range per request:** 28 days (chunk size set to 14 days)
-- **Fields stored:** `demand_mw`
+- **Dataset:** INDO (Initial National Demand Outturn)
+- **Resolution:** Half-hourly, UTC period-start timestamps
+- **Max range per request:** 28 days (chunk size = 14 days)
+
+### Elexon BMRS — Generation Mix
+
+- **Endpoint:** `https://data.elexon.co.uk/bmrs/api/v1/generation/outturn/summary`
+- **Dataset:** FUELHH — half-hourly generation by fuel type
+- **Fields:** wind, gas, nuclear, pumped storage, hydro, net imports
 
 ### Yahoo Finance (commodity prices)
 
 - **Library:** `yfinance`
-- **Symbols:** `BZ=F` (Brent crude, USD/bbl), `TTF=F` (TTF natural gas, EUR/MWh)
-- **Resolution:** Daily closing prices; forward-filled over weekends/holidays
+- **Symbols:** `BZ=F` (Brent crude, USD/bbl), `TTF=F` (TTF gas, EUR/MWh), `GBPUSD=X`, `DX-Y.NYB` (USD index)
+- **Resolution:** Daily closing prices; forward-filled over weekends/holidays (limit=5 days)
 - **Smoothing:** 7-day rolling average applied at feature-build time
+
+### GIE AGSI+ (gas storage)
+
+- **Library:** `gie-py`
+- **Data:** EU and GB gas storage fill levels (%), working gas volume (TWh)
+- **API key required:** `GIE_API_KEY` in `.env`
+
+### EIA (oil inventory)
+
+- **Endpoint:** `https://api.eia.gov/v2/petroleum/stoc/wstk/data/`
+- **Data:** US weekly crude oil inventory (million barrels)
+- **API key required:** `EIA_API_KEY` in `.env`
+
+### Octopus Energy API (comparison only)
+
+- **Tariff:** AGILE-24-10-01, Region N (Southern Scotland)
+- **Used for:** Customer simulation comparison charts — NOT used for model training
 
 ---
 
@@ -76,90 +105,43 @@ All data is stored in `energy.db` (SQLite, WAL mode).
 
 | Table | Key | Description |
 | --- | --- | --- |
-| `prices` | `datetime` (UTC) | Half-hourly Agile prices |
+| `market_index_halfhourly` | `datetime_utc` | Half-hourly EPEX GB day-ahead prices |
+| `prices` | `datetime` (UTC) | Half-hourly Octopus Agile prices (comparison only) |
 | `weather_uk_sites` | `(datetime, site_id)` | Hourly weather per UK city |
 | `weather_wind_sites` | `(datetime, site_id)` | Hourly 100m wind speed per wind farm site |
-| `solar_generation` | `datetime_gmt` (UTC) | Half-hourly GB solar generation (MW) |
+| `solar_generation` | `datetime_gmt` | Half-hourly GB solar generation (MW) |
 | `demand_halfhourly` | `datetime_utc` | Half-hourly GB demand (MW) |
-| `commodity_prices` | `date` | Daily Brent crude + TTF gas |
+| `generation_halfhourly` | `datetime_utc` | Half-hourly GB generation by fuel type |
+| `commodity_prices` | `date` | Daily Brent, TTF gas, GBP/USD, USD index |
+| `gas_storage` | `date` | Daily EU/GB gas storage levels |
+| `oil_inventory` | `date` | Weekly US crude oil inventory |
 | `daily_predictions` | `(predicted_on, date)` | Stored daily forecasts for verification |
+| `weather_forecast_archive` | `(fetch_date, target_date)` | Archived weather forecasts for lead-time backtest |
+| `wind_site_forecast_archive` | `(fetch_date, target_date, site_id)` | Archived wind forecasts |
 | `fetch_log` | `id` | Audit log of all API fetches |
 
 ---
 
-## Price model
+## Network charge constants
 
-Octopus Agile prices follow a published formula:
+Configured in `app/config.py` for SPD (Central Scotland) DNO area:
 
-```text
-price_inc_vat  = API value (p/kWh, includes 5% VAT)
-price_ex_vat   = price_inc_vat ÷ 1.05
-wholesale_est  = price_ex_vat ÷ D              (off-peak slots)
-wholesale_est  = (price_ex_vat − P) ÷ D        (peak 16:00–19:00 slots)
-```
-
-Region N constants: **D = 2.1** (distribution multiplier), **P = 13 p/kWh** (peak adder).
-
-The primary metric throughout is `price_ex_vat` — VAT removed but network charges (TNUoS/DUoS) retained, because network charges are mandatory and identical across suppliers.
-
----
-
-## Regression models
-
-Both models use `Ridge(alpha=1.0)` with `StandardScaler`. Ridge is chosen over plain OLS to handle collinearity between the wind farm site features.
-
-### Daily model
-
-Predicts daily average `price_ex_vat` from:
-
-| Feature group | Features |
-| --- | --- |
-| Weather (UK avg) | `temperature_2m`, `precipitation` |
-| Solar supply | `solar_gw` (GB actual, from PV_Live) |
-| Demand | `demand_mw` (GB daily avg, from Elexon BMRS) |
-| Wind interaction terms | `temp_x_wind` (Temp × UK avg wind), `wind_x_solar` (UK avg wind × solar_gw) |
-| Commodity | `gas_ttf_roll7`, `brent_roll7` (7-day rolling averages) |
-| Wind farm sites | One column per site (100m wind speed daily avg) |
-
-`uk_avg_wind` (mean of all wind farm site columns) is used only in interaction terms, not as a standalone feature, to prevent multicollinearity.
-
-### Half-hourly model
-
-Adds time-of-day features to the daily feature set:
-
-| Feature | Description |
-| --- | --- |
-| `is_peak` | Binary flag: 1 if 16:00–19:00 local time |
-| `hour_sin`, `hour_cos` | Cyclic encoding of hour-of-day |
-| `doy_sin`, `doy_cos` | Cyclic encoding of day-of-year (seasonality) |
-| `demand_mw` | Per-slot demand (not daily avg) |
-| `solar_gw` | Per-slot solar generation (not daily avg) |
+| Charge | Rate | Source |
+| --- | --- | --- |
+| DUoS Red (16:00-19:00 Mon-Fri) | 13.091 p/kWh | SPD LC14 Statement 2026 |
+| DUoS Amber (07:00-16:00, 19:00-23:00 Mon-Fri) | 1.423 p/kWh | SPD LC14 Statement 2026 |
+| DUoS Green (23:00-07:00, all weekends) | 0.036 p/kWh | SPD LC14 Statement 2026 |
+| TNUoS | 0.40 p/kWh | National Grid ESO annual statement |
+| BSUoS buffer | 0.35 p/kWh | ~75th percentile of recent actuals |
+| Policy levies (RO/CfD/CM/FIT/WHD/ECO) | 3.3 p/kWh | Ofgem price cap methodology |
+| Supplier operating costs | 1.5 p/kWh | Ofgem price cap methodology |
+| Standing charge | 61 p/day | Ofgem Q1 2026 price cap |
 
 ---
 
-## Forecast pipeline
+## Model architecture
 
-1. Fetch 7-day hourly weather forecast from Open-Meteo for all 6 UK sites → average
-2. Fetch 7-day hourly 100m wind forecast for each wind farm site
-3. **Estimate `solar_gw`** for forecast days using a Ridge linear model fitted on historical (shortwave_radiation → solar_gw) pairs from the past 90+ days. PV_Live does not provide free forecasts.
-4. **Estimate `demand_mw`** for forecast days using a historical profile: mean demand per (day-of-week, hour-of-day) from the past 12 months.
-5. Commodity features: latest 7-day rolling averages held constant across forecast horizon.
-6. Apply daily model → 7-day daily price predictions (stored in DB for later verification).
-7. Apply half-hourly model → 7-day × 48 slot predictions (shown in dashboard forecast chart).
-
----
-
-## Backtest methodology
-
-The 30-day **hold-out backtest** works as follows:
-
-- Model is trained on all data **except** the most recent 30 days
-- Hold-out period is predicted using **actual historical weather** (not a forecast) — this removes forecast uncertainty and shows the best possible accuracy achievable with this model and these features
-- Errors reported: MAE (mean absolute error, p/kWh), RMSE, MAPE
-
-**MAE (Mean Absolute Error):** the average difference in pence between predicted and actual price, regardless of direction. MAE = 2.6p means predictions are off by ±2.6p on average.
-
-The backtest gives a more honest measure of model quality than in-sample R², because it tests on data the model has never seen.
+See [MODEL.md](MODEL.md) for full model documentation including features, ensemble blending, and walk-forward cross-validation.
 
 ---
 
@@ -182,8 +164,11 @@ Wind speed at 100m hub height is fetched from Open-Meteo's historical archive an
 
 ## Known limitations
 
-- **No gas price forecast.** Commodity rolling averages are held constant across the horizon. A large gas price move during the forecast window won't be captured.
-- **Linear model.** Extreme price spikes from grid constraints, interconnector failures, or emergency events are unlikely to be well captured. A gradient boosting model would improve accuracy at the cost of interpretability.
-- **Demand estimate for forecast.** Day-of-week + hour profile is a reasonable but simplified proxy — it won't capture demand driven by temperature (cold snap → higher demand than seasonal average). This is a natural improvement area.
-- **Solar estimate for forecast.** PV_Live doesn't provide free forecasts. The radiation → solar_gw linear model performs well in normal conditions but may underperform during unusual cloud cover patterns.
-- **Region N constants (D, P)** are hard-coded in `app/config.py`. Octopus periodically updates these; check the tariff page if results look wrong.
+| Limitation | Impact |
+|---|---|
+| **No gas price forecast** | TTF/Brent rolling averages held constant across forecast horizon |
+| **Geopolitical shocks** | Step-changes in price regime cannot be anticipated by weather-based models |
+| **Interconnector flows** | Not reliably forecastable without published day-ahead schedules |
+| **Must-run gas constraints** | Gas may remain online for grid stability even when economically unnecessary |
+| **Price caps / interventions** | Regulatory interventions not modelled |
+| **Weather forecast degradation** | D+5 to D+7 weather forecasts significantly less accurate than D+1 |

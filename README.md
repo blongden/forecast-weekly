@@ -1,32 +1,38 @@
 # UK Electricity Price Analysis
 
-Fetches Octopus Agile prices, UK weather, GB solar generation, GB demand, and gas/oil prices; fits predictive models; and publishes an interactive 7-day forecast dashboard.
+Fetches EPEX SPOT GB day-ahead wholesale prices, UK weather, GB generation mix, and commodity prices; fits Ridge + LightGBM ensemble models; and publishes an interactive 7-day forecast dashboard.
 
 ---
 
 ## Quick start
 
 ```bash
-pip install -r requirements.txt
+make install      # create venv and install dependencies
 make all          # fetch data + run analysis + open dashboard
 ```
 
-On first run this downloads ~12 months of historical data (takes 1–2 minutes). Subsequent runs only fetch the gap since the last update.
+On first run this downloads ~12 months of historical data (takes 1-2 minutes). Subsequent runs only fetch the gap since the last update.
+
+API keys required in `.env` (see `.env.example`):
+- `GIE_API_KEY` — EU/GB gas storage levels (free: https://agsi.gie.eu/account)
+- `EIA_API_KEY` — US crude oil inventories (free: https://www.eia.gov/opendata/register.php)
 
 ---
 
 ## What you get
 
-Open `dashboard.html` in any browser. It contains:
+Open `index.html` in any browser. It contains:
 
 | Section | What it shows |
 | --- | --- |
 | **Stat cards** | 12-month mean price, today's off-peak forecast, cheapest/most expensive day, out-of-sample forecast accuracy (MAE) |
-| **7-Day Forecast** | Predicted half-hourly Agile prices, slot by slot, with peak shading (16:00–19:00) |
-| **Price Drivers** | Gas & oil prices vs Agile tariff; GB demand & solar generation vs price |
-| **12-Month History** | Daily Agile price with estimated wholesale cost |
-| **Model Accuracy** | 30-day hold-out test — how well the model predicts prices it was never trained on |
-| **Model Detail** | Correlations, regression coefficients, scatter plots (for the technically curious) |
+| **7-Day Forecast** | Predicted half-hourly EPEX wholesale prices with 80% prediction intervals (q10/q90), peak shading (16:00-19:00) |
+| **Tariff Design** | 3-band and 4-band time-of-use retail tariff with wholesale + network charge breakdown |
+| **Customer Simulation** | All-in annual bill estimates across 4 load-shifting scenarios, with Ofgem cap comparison |
+| **Price Drivers** | Gas & oil prices, GB demand, solar/wind generation vs wholesale price |
+| **12-Month History** | Daily EPEX wholesale price |
+| **Model Accuracy** | 30-day hold-out backtest and walk-forward cross-validation results |
+| **Model Detail** | Daily and HH model sections — LightGBM feature importance, Ridge coefficients, correlations, prediction intervals |
 
 ---
 
@@ -54,7 +60,7 @@ python3 main.py status
 
 | File | Description |
 | --- | --- |
-| `dashboard.html` | Self-contained interactive HTML dashboard |
+| `index.html` | Self-contained interactive HTML dashboard |
 | `energy.db` | SQLite database (all raw and aggregated data) |
 | `charts/` | Static PNG charts (time series, scatter, forecast) |
 
@@ -64,30 +70,35 @@ python3 main.py status
 
 | Source | What it provides |
 | --- | --- |
-| Octopus Energy API | Half-hourly Agile tariff prices (p/kWh) |
-| Open-Meteo | Hourly weather — averaged across 6 UK cities |
+| Elexon BMRS APXMIDP | Half-hourly EPEX GB day-ahead wholesale prices (£/MWh) |
+| Open-Meteo | Hourly weather (temp, solar, precip) — averaged across 6 UK cities |
+| Open-Meteo | Hourly 100m wind speed at 6 strategic wind farm sites |
 | Sheffield Solar PV_Live | Half-hourly GB national solar generation (MW) |
-| Elexon BMRS | Half-hourly GB national electricity demand (MW) |
-| Yahoo Finance | Daily Brent crude (USD/bbl) and TTF gas (EUR/MWh) |
-
-**Tariff:** AGILE-24-10-01, Region N (Southern Scotland)
+| Elexon BMRS INDO | Half-hourly GB national electricity demand (MW) |
+| Elexon BMRS FUELHH | Half-hourly GB generation mix (wind, gas, nuclear, hydro, imports) |
+| Yahoo Finance | Daily Brent crude, TTF gas, GBP/USD, USD index |
+| GIE AGSI+ | Daily EU/GB gas storage fill levels (%) |
+| EIA | Weekly US crude oil inventory |
+| Octopus Energy API | Agile tariff prices for customer simulation comparison |
 
 ---
 
-## Forecast accuracy
+## Model architecture
 
-The dashboard reports **MAE** (mean absolute error) — the average error in pence per kWh across a 30-day hold-out test. For example, MAE = 2.6p means predictions are off by about 2.6p on average.
+**Ridge + LightGBM ensemble** with walk-forward CV-optimised blend weights.
 
-> This uses actual historical weather as a proxy for a perfect forecast, so real-world accuracy (which must predict weather too) will be somewhat higher. See [TECHNICAL.md](TECHNICAL.md) for details.
+- **Daily model**: predicts daily avg EPEX wholesale price (p/kWh) from 28 features
+- **Half-hourly model**: predicts per-slot EPEX price from 35+ features with recursive day-by-day forecasting
+- **Quantile models**: LightGBM q10/q90 for 80% prediction intervals
+- Walk-forward CV: Ridge MAE ~1.17p, LightGBM ~1.07p, Ensemble ~1.05p
+
+For full model details see [MODEL.md](MODEL.md). For technical reference see [TECHNICAL.md](TECHNICAL.md).
 
 ---
 
 ## Caveats
 
-- **No gas price forecast.** The most recent 7-day rolling average of TTF/Brent is held constant across the forecast horizon. A large gas price move during the forecast window won't be captured.
+- **No gas price forecast.** The most recent 7-day rolling average of TTF/Brent is held constant across the forecast horizon.
 - **Weather forecast error** adds uncertainty on top of the model's own limitations.
 - **Price spikes** from grid constraints or emergency events are not predictable from this model.
-
----
-
-For model internals, data schemas, and API details see [TECHNICAL.md](TECHNICAL.md).
+- **Electricity only.** The customer simulation models electricity bills only, not gas.

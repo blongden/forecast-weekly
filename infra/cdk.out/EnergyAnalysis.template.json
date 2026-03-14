@@ -1,0 +1,881 @@
+{
+ "Resources": {
+  "Efs9E8BF36B": {
+   "Type": "AWS::EFS::FileSystem",
+   "Properties": {
+    "Encrypted": true,
+    "FileSystemPolicy": {
+     "Statement": [
+      {
+       "Action": [
+        "elasticfilesystem:ClientWrite",
+        "elasticfilesystem:ClientRootAccess"
+       ],
+       "Condition": {
+        "Bool": {
+         "elasticfilesystem:AccessedViaMountTarget": "true"
+        }
+       },
+       "Effect": "Allow",
+       "Principal": {
+        "AWS": "*"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "FileSystemTags": [
+     {
+      "Key": "Name",
+      "Value": "EnergyAnalysis/Efs"
+     }
+    ],
+    "LifecyclePolicies": [
+     {
+      "TransitionToIA": "AFTER_30_DAYS"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/Efs/Resource"
+   }
+  },
+  "EfsEfsSecurityGroup6F40EA3B": {
+   "Type": "AWS::EC2::SecurityGroup",
+   "Properties": {
+    "GroupDescription": "EnergyAnalysis/Efs/EfsSecurityGroup",
+    "SecurityGroupEgress": [
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "Allow all outbound traffic by default",
+      "IpProtocol": "-1"
+     }
+    ],
+    "SecurityGroupIngress": [
+     {
+      "CidrIp": "172.31.0.0/16",
+      "Description": "from 172.31.0.0/16:2049",
+      "FromPort": 2049,
+      "IpProtocol": "tcp",
+      "ToPort": 2049
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "EnergyAnalysis/Efs"
+     }
+    ],
+    "VpcId": "vpc-9e6c28f6"
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/Efs/EfsSecurityGroup/Resource"
+   }
+  },
+  "EfsEfsMountTarget195B2DD2E": {
+   "Type": "AWS::EFS::MountTarget",
+   "Properties": {
+    "FileSystemId": {
+     "Ref": "Efs9E8BF36B"
+    },
+    "SecurityGroups": [
+     {
+      "Fn::GetAtt": [
+       "EfsEfsSecurityGroup6F40EA3B",
+       "GroupId"
+      ]
+     }
+    ],
+    "SubnetId": "subnet-1bab2161"
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/Efs/EfsMountTarget1"
+   }
+  },
+  "EfsEfsMountTarget2315C927F": {
+   "Type": "AWS::EFS::MountTarget",
+   "Properties": {
+    "FileSystemId": {
+     "Ref": "Efs9E8BF36B"
+    },
+    "SecurityGroups": [
+     {
+      "Fn::GetAtt": [
+       "EfsEfsSecurityGroup6F40EA3B",
+       "GroupId"
+      ]
+     }
+    ],
+    "SubnetId": "subnet-e97aa3a5"
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/Efs/EfsMountTarget2"
+   }
+  },
+  "EfsEfsMountTarget36646B9A0": {
+   "Type": "AWS::EFS::MountTarget",
+   "Properties": {
+    "FileSystemId": {
+     "Ref": "Efs9E8BF36B"
+    },
+    "SecurityGroups": [
+     {
+      "Fn::GetAtt": [
+       "EfsEfsSecurityGroup6F40EA3B",
+       "GroupId"
+      ]
+     }
+    ],
+    "SubnetId": "subnet-3a8ec053"
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/Efs/EfsMountTarget3"
+   }
+  },
+  "EfsDataAPA971D870": {
+   "Type": "AWS::EFS::AccessPoint",
+   "Properties": {
+    "AccessPointTags": [
+     {
+      "Key": "Name",
+      "Value": "EnergyAnalysis/Efs/DataAP"
+     }
+    ],
+    "FileSystemId": {
+     "Ref": "Efs9E8BF36B"
+    },
+    "PosixUser": {
+     "Gid": "1000",
+     "Uid": "1000"
+    },
+    "RootDirectory": {
+     "CreationInfo": {
+      "OwnerGid": "1000",
+      "OwnerUid": "1000",
+      "Permissions": "755"
+     },
+     "Path": "/data"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/Efs/DataAP/Resource"
+   }
+  },
+  "Dashboard9E4231ED": {
+   "Type": "AWS::S3::Bucket",
+   "Properties": {
+    "PublicAccessBlockConfiguration": {
+     "BlockPublicAcls": true,
+     "BlockPublicPolicy": true,
+     "IgnorePublicAcls": true,
+     "RestrictPublicBuckets": true
+    }
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/Dashboard/Resource"
+   }
+  },
+  "DashboardPolicyE3C9AF48": {
+   "Type": "AWS::S3::BucketPolicy",
+   "Properties": {
+    "Bucket": {
+     "Ref": "Dashboard9E4231ED"
+    },
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:GetObject",
+       "Condition": {
+        "StringEquals": {
+         "AWS:SourceArn": {
+          "Fn::Join": [
+           "",
+           [
+            "arn:",
+            {
+             "Ref": "AWS::Partition"
+            },
+            ":cloudfront::",
+            {
+             "Ref": "AWS::AccountId"
+            },
+            ":distribution/",
+            {
+             "Ref": "Cdn9963B1AD"
+            }
+           ]
+          ]
+         }
+        }
+       },
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "cloudfront.amazonaws.com"
+       },
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "Dashboard9E4231ED",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/Dashboard/Policy/Resource"
+   }
+  },
+  "CdnOrigin1S3OriginAccessControl6AC0AEFC": {
+   "Type": "AWS::CloudFront::OriginAccessControl",
+   "Properties": {
+    "OriginAccessControlConfig": {
+     "Name": "EnergyAnalysisCdnOrigin1S3OriginAccessControlDEAB68C7",
+     "OriginAccessControlOriginType": "s3",
+     "SigningBehavior": "always",
+     "SigningProtocol": "sigv4"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/Cdn/Origin1/S3OriginAccessControl/Resource"
+   }
+  },
+  "Cdn9963B1AD": {
+   "Type": "AWS::CloudFront::Distribution",
+   "Properties": {
+    "DistributionConfig": {
+     "DefaultCacheBehavior": {
+      "CachePolicyId": "658327ea-f89d-4fab-a63d-7e88639e58f6",
+      "Compress": true,
+      "TargetOriginId": "EnergyAnalysisCdnOrigin141499D18",
+      "ViewerProtocolPolicy": "redirect-to-https"
+     },
+     "DefaultRootObject": "index.html",
+     "Enabled": true,
+     "HttpVersion": "http2",
+     "IPV6Enabled": true,
+     "Origins": [
+      {
+       "DomainName": {
+        "Fn::GetAtt": [
+         "Dashboard9E4231ED",
+         "RegionalDomainName"
+        ]
+       },
+       "Id": "EnergyAnalysisCdnOrigin141499D18",
+       "OriginAccessControlId": {
+        "Fn::GetAtt": [
+         "CdnOrigin1S3OriginAccessControl6AC0AEFC",
+         "Id"
+        ]
+       },
+       "S3OriginConfig": {
+        "OriginAccessIdentity": ""
+       }
+      }
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/Cdn/Resource"
+   }
+  },
+  "ApiKeys3BB3983D": {
+   "Type": "AWS::SecretsManager::Secret",
+   "Properties": {
+    "Description": "API keys for energy analysis data sources",
+    "GenerateSecretString": {
+     "GenerateStringKey": "_unused",
+     "SecretStringTemplate": "{\"GIE_API_KEY\":\"\",\"EIA_API_KEY\":\"\",\"ENTSOE_API_KEY\":\"\"}"
+    }
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/ApiKeys/Resource"
+   }
+  },
+  "ClusterEB0386A7": {
+   "Type": "AWS::ECS::Cluster",
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/Cluster/Resource"
+   }
+  },
+  "TaskDefTaskRole1EDB4A67": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/TaskDef/TaskRole/Resource"
+   }
+  },
+  "TaskDefTaskRoleDefaultPolicyA592CB18": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "elasticfilesystem:ClientMount",
+        "elasticfilesystem:ClientWrite",
+        "elasticfilesystem:ClientRootAccess"
+       ],
+       "Condition": {
+        "Bool": {
+         "elasticfilesystem:AccessedViaMountTarget": "true"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "Efs9E8BF36B",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*",
+        "s3:DeleteObject*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging",
+        "s3:Abort*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "Dashboard9E4231ED",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "Dashboard9E4231ED",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "cloudfront:CreateInvalidation",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          "arn:aws:cloudfront::627266360979:distribution/",
+          {
+           "Ref": "Cdn9963B1AD"
+          }
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "TaskDefTaskRoleDefaultPolicyA592CB18",
+    "Roles": [
+     {
+      "Ref": "TaskDefTaskRole1EDB4A67"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/TaskDef/TaskRole/DefaultPolicy/Resource"
+   }
+  },
+  "TaskDef54694570": {
+   "Type": "AWS::ECS::TaskDefinition",
+   "Properties": {
+    "ContainerDefinitions": [
+     {
+      "Environment": [
+       {
+        "Name": "PUBLIC_MODE",
+        "Value": "1"
+       },
+       {
+        "Name": "DASHBOARD_BUCKET",
+        "Value": {
+         "Ref": "Dashboard9E4231ED"
+        }
+       },
+       {
+        "Name": "CLOUDFRONT_DISTRIBUTION_ID",
+        "Value": {
+         "Ref": "Cdn9963B1AD"
+        }
+       },
+       {
+        "Name": "DB_PATH",
+        "Value": "/data/energy.db"
+       },
+       {
+        "Name": "CHARTS_DIR",
+        "Value": "/data/charts"
+       },
+       {
+        "Name": "DASHBOARD_PATH",
+        "Value": "/data/index.html"
+       }
+      ],
+      "Essential": true,
+      "Image": {
+       "Fn::Sub": "627266360979.dkr.ecr.eu-west-2.${AWS::URLSuffix}/cdk-hnb659fds-container-assets-627266360979-eu-west-2:fc3ff04f6cf5d685239a7cdec558dfa289bd238ad3063cb00fb03ca0b40fa981"
+      },
+      "LogConfiguration": {
+       "LogDriver": "awslogs",
+       "Options": {
+        "awslogs-group": {
+         "Ref": "TaskDefAppLogGroup43DBCB9C"
+        },
+        "awslogs-stream-prefix": "energy",
+        "awslogs-region": "eu-west-2"
+       }
+      },
+      "MountPoints": [
+       {
+        "ContainerPath": "/data",
+        "ReadOnly": false,
+        "SourceVolume": "data"
+       }
+      ],
+      "Name": "App",
+      "Secrets": [
+       {
+        "Name": "GIE_API_KEY",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Ref": "ApiKeys3BB3983D"
+           },
+           ":GIE_API_KEY::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "EIA_API_KEY",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Ref": "ApiKeys3BB3983D"
+           },
+           ":EIA_API_KEY::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "ENTSOE_API_KEY",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Ref": "ApiKeys3BB3983D"
+           },
+           ":ENTSOE_API_KEY::"
+          ]
+         ]
+        }
+       }
+      ],
+      "StopTimeout": 120
+     }
+    ],
+    "Cpu": "1024",
+    "ExecutionRoleArn": {
+     "Fn::GetAtt": [
+      "TaskDefExecutionRoleB4775C97",
+      "Arn"
+     ]
+    },
+    "Family": "EnergyAnalysisTaskDefE9704C45",
+    "Memory": "4096",
+    "NetworkMode": "awsvpc",
+    "RequiresCompatibilities": [
+     "FARGATE"
+    ],
+    "TaskRoleArn": {
+     "Fn::GetAtt": [
+      "TaskDefTaskRole1EDB4A67",
+      "Arn"
+     ]
+    },
+    "Volumes": [
+     {
+      "EFSVolumeConfiguration": {
+       "AuthorizationConfig": {
+        "AccessPointId": {
+         "Ref": "EfsDataAPA971D870"
+        },
+        "IAM": "ENABLED"
+       },
+       "FilesystemId": {
+        "Ref": "Efs9E8BF36B"
+       },
+       "TransitEncryption": "ENABLED"
+      },
+      "Name": "data"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/TaskDef/Resource"
+   }
+  },
+  "TaskDefAppLogGroup43DBCB9C": {
+   "Type": "AWS::Logs::LogGroup",
+   "Properties": {
+    "RetentionInDays": 14
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/TaskDef/App/LogGroup/Resource"
+   }
+  },
+  "TaskDefExecutionRoleB4775C97": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/TaskDef/ExecutionRole/Resource"
+   }
+  },
+  "TaskDefExecutionRoleDefaultPolicy0DBB737A": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          "arn:",
+          {
+           "Ref": "AWS::Partition"
+          },
+          ":ecr:eu-west-2:627266360979:repository/cdk-hnb659fds-container-assets-627266360979-eu-west-2"
+         ]
+        ]
+       }
+      },
+      {
+       "Action": "ecr:GetAuthorizationToken",
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "TaskDefAppLogGroup43DBCB9C",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Ref": "ApiKeys3BB3983D"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "TaskDefExecutionRoleDefaultPolicy0DBB737A",
+    "Roles": [
+     {
+      "Ref": "TaskDefExecutionRoleB4775C97"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/TaskDef/ExecutionRole/DefaultPolicy/Resource"
+   }
+  },
+  "TaskDefEventsRoleFB3B67B8": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "events.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/TaskDef/EventsRole/Resource"
+   }
+  },
+  "TaskDefEventsRoleDefaultPolicyA124E85B": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "ecs:RunTask",
+       "Condition": {
+        "ArnEquals": {
+         "ecs:cluster": {
+          "Fn::GetAtt": [
+           "ClusterEB0386A7",
+           "Arn"
+          ]
+         }
+        }
+       },
+       "Effect": "Allow",
+       "Resource": {
+        "Ref": "TaskDef54694570"
+       }
+      },
+      {
+       "Action": "ecs:TagResource",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          "arn:",
+          {
+           "Ref": "AWS::Partition"
+          },
+          ":ecs:eu-west-2:*:task/",
+          {
+           "Ref": "ClusterEB0386A7"
+          },
+          "/*"
+         ]
+        ]
+       }
+      },
+      {
+       "Action": "iam:PassRole",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "TaskDefExecutionRoleB4775C97",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": "iam:PassRole",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "TaskDefTaskRole1EDB4A67",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "TaskDefEventsRoleDefaultPolicyA124E85B",
+    "Roles": [
+     {
+      "Ref": "TaskDefEventsRoleFB3B67B8"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/TaskDef/EventsRole/DefaultPolicy/Resource"
+   }
+  },
+  "TaskDefSecurityGroupD50E7CF0": {
+   "Type": "AWS::EC2::SecurityGroup",
+   "Properties": {
+    "GroupDescription": "EnergyAnalysis/TaskDef/SecurityGroup",
+    "SecurityGroupEgress": [
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "Allow all outbound traffic by default",
+      "IpProtocol": "-1"
+     }
+    ],
+    "VpcId": "vpc-9e6c28f6"
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/TaskDef/SecurityGroup/Resource"
+   }
+  },
+  "DailyRunDEF7747D": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "Description": "Run energy analysis pipeline daily at 10:00 UTC",
+    "ScheduleExpression": "cron(0 10 * * ? *)",
+    "State": "ENABLED",
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "ClusterEB0386A7",
+        "Arn"
+       ]
+      },
+      "EcsParameters": {
+       "LaunchType": "FARGATE",
+       "NetworkConfiguration": {
+        "AwsVpcConfiguration": {
+         "AssignPublicIp": "ENABLED",
+         "SecurityGroups": [
+          {
+           "Fn::GetAtt": [
+            "TaskDefSecurityGroupD50E7CF0",
+            "GroupId"
+           ]
+          }
+         ],
+         "Subnets": [
+          "subnet-1bab2161",
+          "subnet-e97aa3a5",
+          "subnet-3a8ec053"
+         ]
+        }
+       },
+       "TaskCount": 1,
+       "TaskDefinitionArn": {
+        "Ref": "TaskDef54694570"
+       }
+      },
+      "Id": "Target0",
+      "Input": "{}",
+      "RoleArn": {
+       "Fn::GetAtt": [
+        "TaskDefEventsRoleFB3B67B8",
+        "Arn"
+       ]
+      }
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/DailyRun/Resource"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/3VS227CMAz9Ft5DtlF+gIuYJm0aKryjEEznNY2Rk2yqqv773BYGTNqT7ePb8UkmejLN9OPIfIexPZRjh3vdbKKxpcohUGILSnK7Bo5BNyt0sKlDhEotjv4+eqPk49ZwAVHNrIUQ1oQ+dqmbsFVgJ7IBbGKM9TNTOnUld0CrQqabebIl9P1nbzBrcmjrKzzErbKO0uHI5KNulhgi4z5FJK822TtjgWcWCylgcl3/P/BtszAByxBDZbwpgHvmPLAavO4gUWbhkgjBHX5xV6KFibA1oVzCET32bKTgLyKrDXrgK9YqNJVucnLQNfT2evflYtm/MyEIO70kkYJfKuE465Aup3M4UcBIXM9NAOWoEKKvVPyKfvFl1Bd4GdPk6bxRbNuqfpb8BpGpaNW6jh/kHzL9NNXZ6DMgjlneHCvQ+WB/ADM7rs5OAgAA"
+   },
+   "Metadata": {
+    "aws:cdk:path": "EnergyAnalysis/CDKMetadata/Default"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/hnb659fds/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}
