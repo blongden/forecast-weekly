@@ -12,7 +12,7 @@ from plotly.subplots import make_subplots
 
 import os
 
-from app.config import BASE_DIR, PUBLIC_MODE
+from app.config import BASE_DIR
 from app.analysis import ALL_FEATURE_LABELS
 
 DASHBOARD_PATH = Path(os.environ.get("DASHBOARD_PATH", str(BASE_DIR / "index.html")))
@@ -677,146 +677,6 @@ def _daily_forecast_table(predictions: pd.DataFrame, hist_mean: float) -> go.Fig
     return fig
 
 
-def _fig_daily_tariff(daily_tariffs: list, slots_label: str,
-                      agile_by_date: dict | None = None) -> go.Figure:
-    """
-    Grouped + stacked bar chart: x = band, groups = day, bars stacked by cost component.
-    Shows one panel per day (up to 3) side by side.
-    agile_by_date: optional dict {date → {band_name: avg_price_ex_vat}} for Agile overlay.
-    """
-    COMPONENTS = [
-        ("epex_mean_p_kwh",  "EPEX Wholesale",  "#e74c3c"),
-        ("duos_p_kwh",       "DUoS",            "#9b59b6"),
-        ("tnuos_p_kwh",      "TNUoS",           "#2980b9"),
-        ("bsuos_p_kwh",      "BSUoS buffer",    "#16a085"),
-        ("mae_buffer_p_kwh", "Forecast buffer", "#f39c12"),
-        ("margin_p_kwh",     "Margin",          "#27ae60"),
-    ]
-
-    n = len(daily_tariffs)
-    day_labels = [pd.Timestamp(d).strftime("%a %d %b") for d, _ in daily_tariffs]
-
-    fig = make_subplots(
-        rows=1, cols=n,
-        subplot_titles=day_labels,
-        horizontal_spacing=0.08,
-        shared_yaxes=True,
-    )
-
-    for col_idx, (d, tariff) in enumerate(daily_tariffs, start=1):
-        band_labels = tariff["band"].tolist()
-        for comp_col, comp_label, colour in COMPONENTS:
-            vals = tariff[comp_col].tolist()
-            fig.add_trace(go.Bar(
-                name=comp_label,
-                x=band_labels,
-                y=vals,
-                marker_color=colour,
-                showlegend=(col_idx == 1),
-                hovertemplate=f"<b>{comp_label}</b><br>%{{x}}: %{{y:.2f}}p/kWh<extra></extra>",
-            ), row=1, col=col_idx)
-
-        for _, row in tariff.iterrows():
-            fig.add_annotation(
-                x=row["band"],
-                y=row["total_p_kwh"] + 0.3,
-                text=f"<b>{row['total_p_kwh']:.1f}p</b>",
-                showarrow=False,
-                font=dict(size=11),
-                row=1, col=col_idx,
-            )
-
-        # Overlay Agile average per band as diamond markers
-        if agile_by_date and d in agile_by_date:
-            agile_bands = agile_by_date[d]
-            agile_x = [b for b in band_labels if b in agile_bands]
-            agile_y = [agile_bands[b] for b in agile_x]
-            if agile_x:
-                fig.add_trace(go.Scatter(
-                    x=agile_x, y=agile_y,
-                    mode="markers+text",
-                    name="Octopus Agile (ex-VAT)",
-                    marker=dict(size=12, symbol="diamond", color="#2ecc71",
-                                line=dict(width=2, color="#27ae60")),
-                    text=[f"{v:.1f}p" for v in agile_y],
-                    textposition="top center",
-                    textfont=dict(size=10, color="#27ae60"),
-                    showlegend=(col_idx == 1),
-                    hovertemplate="<b>Agile %{x}</b><br>%{y:.2f}p/kWh (ex-VAT)<extra></extra>",
-                ), row=1, col=col_idx)
-
-    fig.update_layout(
-        template=_TEMPLATE,
-        barmode="stack",
-        title=f"{slots_label} — Indicative Cost Stack per Day  "
-              "<sup>(EPEX forecast + DUoS + TNUoS + BSUoS + forecast buffer + margin · ex-VAT · "
-              "3-day window only · diamonds = Octopus Agile)</sup>",
-        legend=dict(orientation="h", y=-0.18, x=0.5, xanchor="center"),
-        hovermode="x",
-        height=500,
-        margin=dict(t=100, b=130),
-    )
-    fig.update_yaxes(title_text="p/kWh (ex-VAT)", col=1)
-    return fig
-
-
-def _daily_tariff_detail_table(daily_tariffs: list) -> go.Figure:
-    """
-    Summary table: rows = (day, band), columns = cost components + total.
-    """
-    all_rows = []
-    for d, tariff in daily_tariffs:
-        day_str = pd.Timestamp(d).strftime("%a %d %b")
-        for _, r in tariff.iterrows():
-            all_rows.append({
-                "Day":            day_str,
-                "Band":           r["band"],
-                "Hours":          r["hours"],
-                "EPEX wholesale": f"{r['epex_mean_p_kwh']:.2f}p",
-                "DUoS":           f"{r['duos_p_kwh']:.2f}p",
-                "TNUoS":          f"{r['tnuos_p_kwh']:.2f}p",
-                "BSUoS":          f"{r['bsuos_p_kwh']:.2f}p",
-                "Fcst buffer":    f"{r['mae_buffer_p_kwh']:.2f}p",
-                "Margin":         f"{r['margin_p_kwh']:.2f}p",
-                "Total (ex-VAT)": f"{r['total_p_kwh']:.2f}p",
-                "_total":         r["total_p_kwh"],
-                "_day":           day_str,
-            })
-
-    df = pd.DataFrame(all_rows)
-    cols = ["Day", "Band", "Hours", "EPEX wholesale", "DUoS", "TNUoS",
-            "BSUoS", "Fcst buffer", "Margin", "Total (ex-VAT)"]
-
-    # Alternate row shading by day block
-    day_vals = df["_day"].tolist()
-    unique_days = list(dict.fromkeys(day_vals))
-    row_colours = [
-        "#f0f4ff" if day_vals[i] == unique_days[0] else
-        ("#fff7f0" if day_vals[i] == unique_days[1] else "#f0fff4")
-        for i in range(len(df))
-    ]
-
-    fig = go.Figure(go.Table(
-        header=dict(
-            values=[f"<b>{c}</b>" for c in cols],
-            fill_color="#2c3e50", font=dict(color="white", size=12),
-            align="left", height=32,
-        ),
-        cells=dict(
-            values=[df[c] for c in cols],
-            align="left", font=dict(size=11), height=28,
-            fill_color=[row_colours] * len(cols),
-        ),
-    ))
-    fig.update_layout(
-        template=_TEMPLATE,
-        title="Full Cost Breakdown — 3 Days × All Bands  (p/kWh ex-VAT; +5% for VAT)",
-        height=max(300, 110 + 32 * len(df)),
-        margin=dict(t=60, b=10, l=0, r=0),
-    )
-    return fig
-
-
 def _corr_table(correlations: dict) -> go.Figure:
     sorted_corr = sorted(correlations.items(), key=lambda x: abs(x[1]["r"]), reverse=True)
     labels  = [v["label"] for _, v in sorted_corr]
@@ -1035,174 +895,6 @@ def _fig_leadtime_accuracy(detail_df: pd.DataFrame, metrics_by_lead: dict,
     return fig
 
 
-def _fig_tariff_vs_agile(
-    price_hist: pd.DataFrame,
-    hh_pred: pd.DataFrame,
-    daily_tariffs_3: list,
-    daily_tariffs_4: list | None = None,
-    daily_tariffs_3_mult: list | None = None,
-) -> go.Figure:
-    """
-    Our designed tariff: 60-day history (what our tariff would have charged on actual EPEX)
-    plus 3-day forecast. All prices inc 5% VAT.
-    """
-    from app.config import (DUOS_RATES, TNUOS_RATE, BSUOS_BUFFER, SUPPLIER_MULTIPLIER)
-    VAT = 1.05
-
-    # ── Hour → DUoS band (consistent with design_tariff band definitions) ────
-    def _hour_to_band(h: int) -> str:
-        if 16 <= h <= 18:
-            return "red"
-        elif 7 <= h <= 15 or 19 <= h <= 22:
-            return "amber"
-        return "green"
-
-    fig = go.Figure()
-
-    # ── Historical: what our tariff would have charged on actual EPEX ────────
-    if price_hist is not None and not price_hist.empty:
-        ah = price_hist.copy()
-        _dt = pd.to_datetime(ah["datetime"], utc=True)
-        ah["dt_local"] = _dt.dt.tz_convert("Europe/London").dt.tz_localize(None)
-        ah = ah.sort_values("dt_local")
-        ah["date"]     = ah["dt_local"].dt.date
-        ah["hour"]     = ah["dt_local"].dt.hour
-        ah["duos_band"] = ah["hour"].map(_hour_to_band)
-
-        band_means = (
-            ah.groupby(["date", "duos_band"])["wholesale_price"]
-            .mean()
-            .reset_index()
-            .rename(columns={"wholesale_price": "epex_band_mean"})
-        )
-        band_means["duos_p_kwh"] = band_means["duos_band"].map(DUOS_RATES)
-        band_means["our_ex_vat"] = (
-            band_means["epex_band_mean"] * SUPPLIER_MULTIPLIER
-            + band_means["duos_p_kwh"] + TNUOS_RATE + BSUOS_BUFFER
-        )
-        band_means["our_inc_vat"] = band_means["our_ex_vat"] * VAT
-
-        ah = ah.merge(band_means[["date", "duos_band", "our_inc_vat"]],
-                      on=["date", "duos_band"], how="left")
-
-        fig.add_trace(go.Scatter(
-            x=ah["dt_local"], y=ah["our_inc_vat"],
-            mode="lines", name=f"Our tariff ×{SUPPLIER_MULTIPLIER} (3-band, historical EPEX)",
-            line=dict(color="#8e44ad", width=1.5),
-            opacity=0.9,
-            hovertemplate="%{x|%d %b %H:%M}<br>Ours: %{y:.2f}p/kWh<extra></extra>",
-        ))
-
-    # ── Historical Agile retail prices for comparison ────────────────────────
-    if price_hist is not None and not price_hist.empty:
-        ag = price_hist.copy()
-        _dt_ag = pd.to_datetime(ag["datetime"], utc=True)
-        ag["dt_local"] = _dt_ag.dt.tz_convert("Europe/London").dt.tz_localize(None)
-        ag = ag.sort_values("dt_local")
-        if "price_inc_vat" in ag.columns:
-            fig.add_trace(go.Scatter(
-                x=ag["dt_local"], y=ag["price_inc_vat"],
-                mode="lines", name="Octopus Agile (inc VAT)",
-                line=dict(color="#2ecc71", width=1.2),
-                opacity=0.7,
-                hovertemplate="%{x|%d %b %H:%M}<br>Agile: %{y:.2f}p/kWh<extra></extra>",
-            ))
-
-    # ── Forward: our designed tariff from forecast ────────────────────────────
-    if hh_pred is not None and not hh_pred.empty:
-        fwd = hh_pred.copy()
-        fwd["hour"] = fwd["datetime_local"].dt.hour
-        fwd["dow"]  = fwd["datetime_local"].dt.dayofweek  # 0=Mon
-
-        # Our designed tariff: expand daily_tariffs_3 flat prices per-slot
-        tariff_lookup: dict = {}
-        band_to_duos = {"peak": "red", "standard": "amber", "off-peak": "green"}
-        for d, t in (daily_tariffs_3 or []):
-            for _, row in t.iterrows():
-                duos_key = band_to_duos.get(row["band"], row["band"])
-                tariff_lookup[(d, duos_key)] = row["total_p_kwh"] * VAT  # inc VAT
-
-        fwd["date"]      = fwd["datetime_local"].dt.date
-        fwd["duos_band"] = fwd["hour"].map(_hour_to_band)
-        fwd["our_3band"] = fwd.apply(
-            lambda r: tariff_lookup.get((r["date"], r["duos_band"]), float("nan")),
-            axis=1,
-        )
-
-        # Multiplier-mode tariff overlay
-        if daily_tariffs_3_mult:
-            mult_lookup: dict = {}
-            for d, t in daily_tariffs_3_mult:
-                for _, row in t.iterrows():
-                    duos_key = band_to_duos.get(row["band"], row["band"])
-                    mult_lookup[(d, duos_key)] = row["total_p_kwh"] * VAT
-            fwd["our_3band_mult"] = fwd.apply(
-                lambda r: mult_lookup.get((r["date"], r["duos_band"]), float("nan")),
-                axis=1,
-            )
-            fig.add_trace(go.Scatter(
-                x=fwd["datetime_local"], y=fwd["our_3band_mult"],
-                mode="lines", name="Our 3-band tariff — multiplier (forecast)",
-                line=dict(color="#8e44ad", width=2.5, dash="dot"),
-                hovertemplate="%{x|%d %b %H:%M}<br>Our tariff (×mult): %{y:.2f}p/kWh<extra></extra>",
-            ))
-
-        # 4-band if provided
-        if daily_tariffs_4:
-            band4_to_duos = {"peak": "red", "day": "amber", "evening": "amber", "night": "green"}
-            lookup4: dict = {}
-            for d, t in daily_tariffs_4:
-                for _, row in t.iterrows():
-                    dk = band4_to_duos.get(row["band"], "green")
-                    # For 4-band, map by actual band name per slot
-                    lookup4[(d, row["band"])] = row["total_p_kwh"]
-
-            def _hour_to_4band(h: int) -> str:
-                if 0 <= h <= 6:     return "night"
-                if 7 <= h <= 15:    return "day"
-                if 16 <= h <= 18:   return "peak"
-                return "evening"
-
-            fwd["band4"]    = fwd["hour"].map(_hour_to_4band)
-            fwd["our_4band"] = fwd.apply(
-                lambda r: lookup4.get((r["date"], r["band4"]), float("nan")) * VAT,
-                axis=1,
-            )
-            fig.add_trace(go.Scatter(
-                x=fwd["datetime_local"], y=fwd["our_4band"],
-                mode="lines", name="Our 4-band tariff (forecast)",
-                line=dict(color="#e67e22", width=2.0, dash="dot"),
-                hovertemplate="%{x|%d %b %H:%M}<br>Our 4-band: %{y:.2f}p/kWh<extra></extra>",
-            ))
-
-    # "Now" vertical line
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    fig.add_shape(
-        type="line", xref="x", yref="paper",
-        x0=now_str, x1=now_str, y0=0, y1=1,
-        line=dict(color="#7f8c8d", width=1.5, dash="dash"),
-    )
-    fig.add_annotation(
-        x=now_str, xref="x", yref="paper", y=1.02, showarrow=False,
-        text="now", font=dict(color="#7f8c8d", size=11),
-    )
-
-    fig.update_layout(
-        template=_TEMPLATE,
-        title=(
-            "Our Designed Tariff vs Octopus Agile  "
-            "<sup>60-day history (actual EPEX) + 3-day forecast · all prices inc 5% VAT · "
-            "historical prices use actual EPEX, no forecast buffer</sup>"
-        ),
-        yaxis_title="p/kWh (inc VAT)",
-        hovermode="x unified",
-        height=460,
-        legend=dict(orientation="h", y=-0.18, x=0.5, xanchor="center"),
-        margin=dict(t=80, b=110),
-    )
-    return fig
-
-
 def _fig_hourly_profile(hourly_profile: pd.DataFrame) -> go.Figure:
     """
     Bar chart of mean EPEX price by hour of day, with weekday/weekend split
@@ -1262,398 +954,10 @@ def _fig_hourly_profile(hourly_profile: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def _fig_tariff_comparison_table(price_hist: pd.DataFrame) -> go.Figure:
-    """
-    Small summary table: Agile vs our tariff averages over the historical window,
-    broken down by DUoS band (peak / standard / off-peak) + overall.
-    """
-    from app.config import (DUOS_RATES, TNUOS_RATE, BSUOS_BUFFER,
-                             SUPPLIER_MULTIPLIER)
-    VAT = 1.05
 
-    if price_hist is None or price_hist.empty:
-        fig = go.Figure()
-        fig.update_layout(title="Tariff Comparison — no history data", height=220,
-                          template=_TEMPLATE)
-        return fig
+# ── Ensemble / LightGBM charts ──────────────────────────────────────────────
+# (tariff/simulation chart functions removed — moved to scottishpower/tariff)
 
-    ah = price_hist.copy()
-    _dt = pd.to_datetime(ah["datetime"], utc=True)
-    ah["dt_local"] = _dt.dt.tz_convert("Europe/London").dt.tz_localize(None)
-    ah["hour"] = ah["dt_local"].dt.hour
-
-    def _band(h):
-        if 16 <= h <= 18: return "peak"
-        if 7 <= h <= 15 or 19 <= h <= 22: return "standard"
-        return "off-peak"
-
-    def _duos(h):
-        if 16 <= h <= 18: return "red"
-        if 7 <= h <= 15 or 19 <= h <= 22: return "amber"
-        return "green"
-
-    ah["band"] = ah["hour"].map(_band)
-    ah["duos_band"] = ah["hour"].map(_duos)
-    ah["duos_p_kwh"] = ah["duos_band"].map(DUOS_RATES)
-    ah["our_inc_vat"] = (ah["wholesale_price"] * SUPPLIER_MULTIPLIER
-                         + ah["duos_p_kwh"] + TNUOS_RATE + BSUOS_BUFFER) * VAT
-
-    rows = []
-    for band in ["peak", "standard", "off-peak", "all"]:
-        sub = ah if band == "all" else ah[ah["band"] == band]
-        if sub.empty:
-            continue
-        agile_avg = sub["price_inc_vat"].mean()
-        ours_avg  = sub["our_inc_vat"].mean()
-        diff      = ours_avg - agile_avg
-        sign      = "▲" if diff >= 0 else "▼"
-        rows.append({
-            "Band":        band.title() if band != "all" else "Overall",
-            "Agile avg":   f"{agile_avg:.2f}p",
-            "Our tariff":  f"{ours_avg:.2f}p",
-            "Difference":  f"{sign} {abs(diff):.2f}p",
-            "_diff":       diff,
-        })
-
-    df = pd.DataFrame(rows)
-    diff_colours = ["#ffeaea" if d >= 0 else "#eafff0" for d in df["_diff"]]
-
-    fig = go.Figure(go.Table(
-        header=dict(
-            values=["<b>Band</b>", "<b>Octopus Agile avg</b>",
-                    "<b>Our tariff avg</b>", "<b>Difference</b>"],
-            fill_color="#2c3e50", font=dict(color="white", size=12),
-            align="left", height=32,
-        ),
-        cells=dict(
-            values=[df["Band"], df["Agile avg"], df["Our tariff"], df["Difference"]],
-            align="left", font=dict(size=12), height=28,
-            fill_color=[["white"] * len(df)] * 3 + [diff_colours],
-        ),
-    ))
-    n = len(df)
-    fig.update_layout(
-        template=_TEMPLATE,
-        title=f"60-Day Tariff Comparison — Agile vs Our Tariff (×{SUPPLIER_MULTIPLIER})  "
-              f"(inc 5% VAT · red = ours costs more · green = ours cheaper)",
-        height=max(220, 110 + 32 * n),
-        margin=dict(t=60, b=10, l=0, r=0),
-    )
-    return fig
-
-
-# ── Customer simulation charts ─────────────────────────────────────────────────
-
-_SIM_LABELS = {
-    "no_shift":     "No shifting<br>(price inelastic)",
-    "light_shift":  "Light shifting<br>(dishwasher/washing)",
-    "heavy_shift":  "Heavy shifting<br>(smart appliances)",
-    "ev_household": "EV household<br>(+4 kWh/day overnight)",
-}
-
-_SIM_SUBTITLE = (
-    "All-in annual bill including wholesale, network charges, policy levies "
-    "(RO/CfD/CM ~3.3p/kWh), supplier operating costs (~1.5p/kWh), standing charge "
-    "(~61p/day), and 5% VAT. Ofgem cap shown as reference."
-)
-
-
-def _fig_simulation_customer_bills(sim_df: pd.DataFrame) -> go.Figure:
-    """Stacked bar: all-in customer annual bill by scenario with cost breakdown."""
-    from app.config import OFGEM_CAP_QUARTER
-
-    # Use the default multiplier (×2.0) for the main chart
-    default_mult = 2.0
-    sub = sim_df[sim_df["multiplier"] == default_mult]
-    if sub.empty:
-        sub = sim_df[sim_df["multiplier"] == sim_df["multiplier"].iloc[0]]
-        default_mult = sub["multiplier"].iloc[0]
-
-    scenarios = list(dict.fromkeys(sub["scenario"]))
-    sub = sub.set_index("scenario").loc[scenarios]
-    labels = [_SIM_LABELS.get(s, s) for s in scenarios]
-
-    # Cost components for stacked bars (all inc VAT, in £/year)
-    wholesale_network = sub["cust_bill_ours_annual_gbp"].values
-    levies = sub["levy_annual_gbp"].values
-    opex = sub["opex_annual_gbp"].values
-    standing = sub["standing_charge_annual_gbp"].values
-    totals = sub["cust_allin_ours_annual_gbp"].values
-
-    fig = go.Figure()
-
-    # Stacked components for our tariff
-    fig.add_trace(go.Bar(
-        name="Wholesale + Network",
-        x=labels, y=wholesale_network,
-        marker_color="#9b59b6",
-        hovertemplate="<b>%{x}</b><br>Wholesale + Network: £%{y:.0f}/yr<extra></extra>",
-    ))
-    fig.add_trace(go.Bar(
-        name="Policy Levies (RO/CfD/CM)",
-        x=labels, y=levies,
-        marker_color="#e67e22",
-        hovertemplate="<b>%{x}</b><br>Policy levies: £%{y:.0f}/yr<extra></extra>",
-    ))
-    fig.add_trace(go.Bar(
-        name="Supplier Operating Costs",
-        x=labels, y=opex,
-        marker_color="#f39c12",
-        hovertemplate="<b>%{x}</b><br>Supplier opex: £%{y:.0f}/yr<extra></extra>",
-    ))
-    fig.add_trace(go.Bar(
-        name="Standing Charge",
-        x=labels, y=standing,
-        marker_color="#95a5a6",
-        hovertemplate="<b>%{x}</b><br>Standing charge: £%{y:.0f}/yr<extra></extra>",
-    ))
-
-    # Add total annotation on top of each stacked bar
-    for i, total in enumerate(totals):
-        fig.add_annotation(
-            x=labels[i], y=total, text=f"<b>£{total:.0f}</b>",
-            showarrow=False, yshift=15, font=dict(size=13, color="#2c3e50"),
-        )
-
-    # Ofgem cap reference line
-    ofgem_caps = sub["ofgem_cap_annual_gbp"].values
-    fig.add_trace(go.Scatter(
-        name=f"Ofgem Cap ({OFGEM_CAP_QUARTER})",
-        x=labels, y=ofgem_caps,
-        mode="markers+lines",
-        marker=dict(color="#e74c3c", size=10, symbol="diamond"),
-        line=dict(color="#e74c3c", dash="dash", width=2),
-        hovertemplate="<b>Ofgem Cap</b><br>%{x}: £%{y:.0f}/yr<extra></extra>",
-    ))
-
-    # Agile all-in comparison as scatter markers
-    agile_totals = sub["cust_allin_agile_annual_gbp"].values
-    fig.add_trace(go.Scatter(
-        name="Agile All-In",
-        x=labels, y=agile_totals,
-        mode="markers",
-        marker=dict(color="#3498db", size=12, symbol="circle"),
-        hovertemplate="<b>Agile</b><br>%{x}: £%{y:.0f}/yr<extra></extra>",
-    ))
-
-    fig.update_layout(
-        template=_TEMPLATE,
-        title=(
-            f"Customer Annual Electricity Bill — All-In Cost Breakdown  "
-            f"(×{default_mult} · inc 5% VAT · annualised from 60-day history)"
-        ),
-        yaxis_title="Annual Bill (£)",
-        barmode="stack",
-        legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
-        height=520,
-        margin=dict(t=100, b=60),
-    )
-    return fig
-
-
-def _fig_simulation_supplier_profit(sim_df: pd.DataFrame) -> go.Figure:
-    """Grouped bar: supplier annual profit per customer, one bar per multiplier + Agile."""
-    multipliers = sorted(sim_df["multiplier"].unique(), reverse=True)
-    scenarios   = list(dict.fromkeys(sim_df["scenario"]))
-    labels      = [_SIM_LABELS.get(s, s) for s in scenarios]
-
-    mult_colours = {2.1: "#27ae60", 2.0: "#2ecc71", 1.9: "#58d68d"}
-    fig = go.Figure()
-
-    for mult in multipliers:
-        sub = sim_df[sim_df["multiplier"] == mult].set_index("scenario").loc[scenarios]
-        colour = mult_colours.get(mult, "#27ae60")
-        fig.add_trace(go.Bar(
-            name=f"Our tariff ×{mult}",
-            x=labels,
-            y=sub["sup_profit_annual_gbp"].values,
-            marker_color=colour,
-            text=[f"£{v:.0f}" for v in sub["sup_profit_annual_gbp"]],
-            textposition="outside",
-            hovertemplate=f"×{mult} <b>%{{x}}</b><br>Profit: £%{{y:.0f}}/yr<extra></extra>",
-        ))
-
-    agile_vals = sim_df[sim_df["multiplier"] == multipliers[0]].set_index("scenario").loc[scenarios]
-    fig.add_trace(go.Bar(
-        name="Agile reseller equivalent",
-        x=labels,
-        y=agile_vals["agile_profit_annual_gbp"].values,
-        marker_color="#e67e22",
-        text=[f"£{v:.0f}" for v in agile_vals["agile_profit_annual_gbp"]],
-        textposition="outside",
-        hovertemplate="<b>Agile %{x}</b><br>Profit: £%{y:.0f}/yr<extra></extra>",
-    ))
-
-    fig.add_hline(y=0, line_width=1, line_color="#2c3e50")
-    fig.update_layout(
-        template=_TEMPLATE,
-        title="Supplier Annual Profit per Customer  (ex-VAT · revenue − EPEX wholesale cost − network charges)",
-        yaxis_title="Profit (£/customer/year)",
-        barmode="group",
-        legend=dict(orientation="h", y=1.10),
-        height=480,
-        margin=dict(t=80, b=60),
-    )
-    return fig
-
-
-def _fig_simulation_table(sim_df: pd.DataFrame) -> go.Figure:
-    """Summary table: all monetary outputs, one row per (multiplier, scenario)."""
-    multipliers = sorted(sim_df["multiplier"].unique(), reverse=True)
-    scenarios   = list(dict.fromkeys(sim_df["scenario"]))
-
-    # Build rows in multiplier-then-scenario order
-    rows_out = []
-    for mult in multipliers:
-        sub = sim_df[sim_df["multiplier"] == mult].set_index("scenario").loc[scenarios]
-        for sc in scenarios:
-            r = sub.loc[sc]
-            rows_out.append({
-                "mult":         f"×{mult}",
-                "scenario":     _SIM_LABELS.get(sc, sc).replace("<br>", " "),
-                "shift":        f"{int(r['shift_frac'] * 100)}%",
-                "our_bill":     r.get("cust_allin_ours_annual_gbp", r["cust_bill_ours_annual_gbp"]),
-                "agile_bill":   r.get("cust_allin_agile_annual_gbp", r["cust_bill_agile_annual_gbp"]),
-                "saving":       r["cust_saving_vs_agile_gbp"],
-                "ofgem_cap":    r.get("ofgem_cap_annual_gbp", float("nan")),
-                "our_pkwh":     r.get("effective_allin_p_kwh_ours", r.get("effective_p_kwh_ours",  float("nan"))),
-                "agile_pkwh":   r.get("effective_allin_p_kwh_agile", r.get("effective_p_kwh_agile", float("nan"))),
-                "our_profit":   r["sup_profit_annual_gbp"],
-                "agile_profit": r["agile_profit_annual_gbp"],
-            })
-
-    tdf = pd.DataFrame(rows_out)
-    saving_colours = ["#eafff0" if v >= 0 else "#ffeaea" for v in tdf["saving"]]
-    # Alternate shading by multiplier block
-    n_sc = len(scenarios)
-    row_colours = []
-    for i, mult in enumerate(multipliers):
-        shade = "#f0f4ff" if i % 2 == 0 else "#fff7f0"
-        row_colours.extend([shade] * n_sc)
-
-    fig = go.Figure(go.Table(
-        header=dict(
-            values=[
-                "<b>Multiplier</b>", "<b>Scenario</b>", "<b>Shift %</b>",
-                "<b>Our bill/yr</b>", "<b>Agile bill/yr</b>", "<b>Ofgem cap/yr</b>",
-                "<b>Saving vs Agile</b>",
-                "<b>Our p/kWh</b>", "<b>Agile p/kWh</b>",
-                "<b>Supplier profit/yr</b>",
-            ],
-            fill_color="#2c3e50", font=dict(color="white", size=12),
-            align="left", height=34,
-        ),
-        cells=dict(
-            values=[
-                tdf["mult"],
-                tdf["scenario"],
-                tdf["shift"],
-                [f"£{v:.0f}" for v in tdf["our_bill"]],
-                [f"£{v:.0f}" for v in tdf["agile_bill"]],
-                [f"£{v:.0f}" for v in tdf["ofgem_cap"]],
-                [f"{'▲' if v >= 0 else '▼'} £{abs(v):.0f}" for v in tdf["saving"]],
-                [f"{v:.1f}p" for v in tdf["our_pkwh"]],
-                [f"{v:.1f}p" for v in tdf["agile_pkwh"]],
-                [f"£{v:.0f}" for v in tdf["our_profit"]],
-            ],
-            align="left", font=dict(size=12), height=30,
-            fill_color=[
-                row_colours,
-                row_colours,
-                row_colours,
-                row_colours,
-                row_colours,
-                row_colours,
-                saving_colours,
-                row_colours,
-                row_colours,
-                row_colours,
-            ],
-        ),
-    ))
-    n = len(tdf)
-    fig.update_layout(
-        template=_TEMPLATE,
-        title="Customer Simulation Summary  (all-in bills inc levies, standing charge, opex, VAT · ▲ = ours cheaper)",
-        height=max(300, 120 + 32 * n),
-        margin=dict(t=60, b=10, l=0, r=0),
-    )
-    return fig
-
-
-def _fig_simulation_unit_rate(sim_df: pd.DataFrame) -> go.Figure:
-    """
-    Effective all-in unit rate (p/kWh) per scenario vs Ofgem price cap reference.
-    Includes all cost components (wholesale, network, levies, opex, standing charge amortised).
-    """
-    from app.config import OFGEM_UNIT_RATE_P_KWH, OFGEM_CAP_QUARTER, OFGEM_STANDING_CHARGE_P_DAY
-
-    multipliers = sorted(sim_df["multiplier"].unique(), reverse=True)
-    scenarios   = list(dict.fromkeys(sim_df["scenario"]))
-    labels      = [_SIM_LABELS.get(s, s) for s in scenarios]
-
-    mult_colours = {2.1: "#8e44ad", 2.0: "#9b59b6"}
-    fig = go.Figure()
-
-    for mult in multipliers:
-        sub = sim_df[sim_df["multiplier"] == mult].set_index("scenario").loc[scenarios]
-        colour = mult_colours.get(mult, "#8e44ad")
-        # All-in effective rate = total bill / annual kWh (inc standing charge amortised)
-        allin_rate = sub["effective_allin_p_kwh_ours"].values if "effective_allin_p_kwh_ours" in sub.columns else sub["effective_p_kwh_ours"].values
-        fig.add_trace(go.Bar(
-            name=f"Our tariff ×{mult} (all-in)",
-            x=labels,
-            y=allin_rate,
-            marker_color=colour,
-            text=[f"{v:.1f}p" for v in allin_rate],
-            textposition="outside",
-            hovertemplate=f"×{mult} <b>%{{x}}</b><br>All-in rate: %{{y:.1f}}p/kWh<extra></extra>",
-        ))
-
-    agile_vals = sim_df[sim_df["multiplier"] == multipliers[0]].set_index("scenario").loc[scenarios]
-    agile_allin = agile_vals["effective_allin_p_kwh_agile"].values if "effective_allin_p_kwh_agile" in agile_vals.columns else agile_vals["effective_p_kwh_agile"].values
-    fig.add_trace(go.Bar(
-        name="Octopus Agile (all-in)",
-        x=labels,
-        y=agile_allin,
-        marker_color="#3498db",
-        text=[f"{v:.1f}p" for v in agile_allin],
-        textposition="outside",
-        hovertemplate="<b>Agile %{x}</b><br>All-in rate: %{y:.1f}p/kWh<extra></extra>",
-    ))
-
-    # Ofgem cap reference — unit rate + standing charge amortised over annual kWh
-    # Standing charge amortised varies by scenario due to different annual_kwh
-    for i, sc in enumerate(scenarios):
-        sc_row = agile_vals.loc[sc]
-        annual_kwh = sc_row.get("annual_kwh", 2920)
-        standing_amortised = OFGEM_STANDING_CHARGE_P_DAY * 365 / annual_kwh
-        ofgem_allin = OFGEM_UNIT_RATE_P_KWH + standing_amortised
-
-    fig.add_hline(
-        y=OFGEM_UNIT_RATE_P_KWH + OFGEM_STANDING_CHARGE_P_DAY * 365 / 2920,
-        line_dash="dash", line_color="#e74c3c", line_width=2,
-        annotation_text=f"Ofgem cap {OFGEM_CAP_QUARTER}: ~{OFGEM_UNIT_RATE_P_KWH + OFGEM_STANDING_CHARGE_P_DAY * 365 / 2920:.1f}p/kWh all-in (8 kWh/day)",
-        annotation_position="top right",
-        annotation_font=dict(color="#e74c3c", size=11),
-    )
-
-    fig.update_layout(
-        template=_TEMPLATE,
-        title=(
-            "Effective All-In Unit Rate (p/kWh) inc Standing Charge  "
-            f"<sup>Wholesale + network + levies + opex + standing charge ÷ annual kWh · inc 5% VAT</sup>"
-        ),
-        yaxis_title="p/kWh (all-in)",
-        barmode="group",
-        legend=dict(orientation="h", y=1.12),
-        height=460,
-        margin=dict(t=90, b=60),
-    )
-    return fig
-
-
-# ── Ensemble / LightGBM charts ────────────────────────────────────────────────
 
 def _fig_lgbm_importance(ensemble: dict, label: str = "") -> go.Figure:
     """Horizontal bar chart of LightGBM feature importances."""
@@ -1772,6 +1076,27 @@ def _fig_prediction_intervals(daily_predictions: pd.DataFrame) -> go.Figure | No
     return fig
 
 
+def _forecast_summary_html(summary: dict | None) -> str:
+    """Render the LLM week-ahead summary as an HTML block."""
+    if not summary:
+        return ""
+    days_html = ""
+    for d in summary.get("days", []):
+        days_html += (
+            '<div style="padding:6px 10px; background:#f8f9fa; '
+            'border-radius:4px; font-size:0.9em;">'
+            f'<strong>{d["date"]}</strong>: {d["summary"]}</div>'
+        )
+    return (
+        '<div class="forecast-summary" style="max-width:1200px; margin:0 auto 24px; '
+        'padding:16px 24px; background:#fff; border-radius:8px; border-left:4px solid #3498db;">'
+        f'<p style="font-size:1.05em; margin:0 0 12px; color:#2c3e50;">'
+        f'<strong>Week Ahead:</strong> {summary["week_summary"]}</p>'
+        '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:8px;">'
+        f'{days_html}</div></div>'
+    )
+
+
 # ── Main generator ─────────────────────────────────────────────────────────────
 
 def generate(
@@ -1787,20 +1112,15 @@ def generate(
     verifiable_df=None,
     hh_backtest_df=None,
     hh_backtest_metrics=None,
-    daily_tariffs_3=None,
-    daily_tariffs_4=None,
-    daily_tariffs_3_mult=None,
-    daily_tariffs_4_mult=None,
     daily_predictions=None,
-    price_hist=None,
     leadtime_detail_df=None,
     leadtime_metrics=None,
     hh_hourly_profile=None,
-    sim_df=None,
     ensemble=None,
     hh_ensemble=None,
     wfcv_detail=None,
     wfcv_metrics=None,
+    forecast_summary=None,
 ) -> Path:
     """Build and write the HTML dashboard. Returns the path."""
 
@@ -1894,53 +1214,6 @@ def generate(
         wfcv_metrics or {},
     ) if wfcv_detail is not None and not wfcv_detail.empty else None
     fig_pred_interval = _fig_prediction_intervals(daily_predictions)
-
-    has_tariff = daily_tariffs_3_mult is not None and len(daily_tariffs_3_mult) > 0
-    if has_tariff:
-        from app.config import SUPPLIER_MULTIPLIER
-
-        # Build Agile average ex-VAT price per band per forecast day for overlay
-        agile_by_date: dict = {}
-        if price_hist is not None and not price_hist.empty:
-            _ag = price_hist.copy()
-            _ag_dt = pd.to_datetime(_ag["datetime"], utc=True)
-            _ag["dt_local"] = _ag_dt.dt.tz_convert("Europe/London").dt.tz_localize(None)
-            _ag["_date"] = _ag["dt_local"].dt.date
-            _ag["_hour"] = _ag["dt_local"].dt.hour
-
-            def _hour_to_3band(h):
-                if 16 <= h <= 18: return "peak"
-                if 7 <= h <= 15 or 19 <= h <= 22: return "standard"
-                return "off-peak"
-
-            _ag["_band"] = _ag["_hour"].map(_hour_to_3band)
-            for d, grp in _ag.groupby("_date"):
-                band_avg = grp.groupby("_band")["price_ex_vat"].mean().to_dict()
-                agile_by_date[d] = band_avg
-
-        mult_label = f"3-Band Tariff (×{SUPPLIER_MULTIPLIER} wholesale)"
-        fig_tariff_3_mult = _fig_daily_tariff(daily_tariffs_3_mult, mult_label,
-                                               agile_by_date=agile_by_date)
-        fig_tariff_4_mult = _fig_daily_tariff(daily_tariffs_4_mult,
-                                               mult_label.replace("3-Band", "4-Band"),
-                                               agile_by_date=agile_by_date) \
-                            if daily_tariffs_4_mult else None
-        # Detail table from multiplier tariff
-        fig_tariff_detail = _daily_tariff_detail_table(daily_tariffs_3_mult)
-        fig_tariff_vs_agile = _fig_tariff_vs_agile(
-            price_hist, hh_pred, daily_tariffs_3, daily_tariffs_4,
-            daily_tariffs_3_mult=daily_tariffs_3_mult,
-        )
-        fig_tariff_comparison = _fig_tariff_comparison_table(price_hist)
-
-    from app.config import OFGEM_UNIT_RATE_P_KWH, OFGEM_CAP_QUARTER  # noqa: F401 (used in HTML fstring)
-    has_simulation = sim_df is not None and not sim_df.empty
-    if has_simulation:
-        fig_sim_bills     = _fig_simulation_customer_bills(sim_df)
-        fig_sim_profit    = _fig_simulation_supplier_profit(sim_df)
-        fig_sim_table     = _fig_simulation_table(sim_df)
-        fig_sim_unit_rate = _fig_simulation_unit_rate(sim_df)
-        sim_n_days = len(price_hist["datetime"].unique()) if price_hist is not None and not price_hist.empty else 60
 
     offpeak_str = f"{offpeak_mean:.2f}p" if offpeak_mean is not None else "—"
 
@@ -2053,12 +1326,10 @@ def generate(
 
 <nav>
   <a href="#forecast">Forecast</a>
-  {"" if PUBLIC_MODE else '<a href="#tariff">Tariff Design</a>'}
-  {"" if PUBLIC_MODE else '<a href="#simulation">Customer Simulation</a>'}
   <a href="#drivers">Price Drivers</a>
   <a href="#history">History</a>
   <a href="#accuracy">Model Accuracy</a>
-  {"" if PUBLIC_MODE else '<a href="#model">Model Detail</a>'}
+  <a href="#model">Model Detail</a>
 </nav>
 
 <div class="stats">
@@ -2092,18 +1363,7 @@ def generate(
     <div class="value">{hh_mae_str}</div>
     <div class="sub">per slot · 30-day hold-out</div>
   </div>
-  {"" if PUBLIC_MODE or not has_tariff else f"""
-  <div class="stat-card">
-    <div class="label">Today Peak Rate (3-band)</div>
-    <div class="value">{daily_tariffs_3[0][1][daily_tariffs_3[0][1]['band']=='peak']['total_p_kwh'].values[0]:.1f}p</div>
-    <div class="sub">16:00–19:00 · ex-VAT · today</div>
-  </div>
-  <div class="stat-card">
-    <div class="label">Today Off-Peak Rate (3-band)</div>
-    <div class="value">{daily_tariffs_3[0][1][daily_tariffs_3[0][1]['band']=='off-peak']['total_p_kwh'].values[0]:.1f}p</div>
-    <div class="sub">23:00–07:00 · ex-VAT · today</div>
-  </div>
-  """}
+
 </div>
 
 <div id="forecast">
@@ -2112,51 +1372,14 @@ def generate(
             f"Shaded bands = peak rate period (16:00–19:00). "
             f"<strong>{hh_blend_desc}</strong>. "
             f"Based on {NWP} weather forecast + current gas prices + yesterday's per-slot {EPEX} price as an autoregressive anchor. "
-            f"{'Network charges (' + _t('DUoS','Distribution Use of System') + '/' + _t('TNUoS','Transmission Network Use of System') + ') and supplier margin are not included — these are raw wholesale costs. See the Tariff Design section below for derived retail prices.' if not PUBLIC_MODE else 'These are raw wholesale costs — network charges and supplier margin are not included.'}")}
+            f"These are raw wholesale costs — network charges and supplier margin are not included.")}
 </div>
 <div class="charts">
   {_div(fig_forecast)}
   {"" if fig_daily_forecast is None else _div(fig_daily_forecast)}
 </div>
+{_forecast_summary_html(forecast_summary)}
 
-{"" if PUBLIC_MODE or not has_tariff else f'''
-<div id="tariff">
-  {_section("Tariff Design",
-            f"Indicative time-of-use tariff for the next 3 days, priced from each day's {EPEX} wholesale forecast. "
-            f"Beyond 3 days {NWP} forecast skill degrades significantly. "
-            f"Each band = forecast {EPEX} mean × wholesale multiplier (GB-wide wholesale + implicit margin) + "
-            f"{_t('DUoS','Distribution Use of System')} ({SPD} Central Scotland LV {_t('HH','Half-Hourly metered')} — region-specific) + "
-            f"{_t('TNUoS','Transmission Network Use of System')} (GB-wide) + "
-            f"{_t('BSUoS','Balancing Use of System')} buffer (GB-wide) + forecast {MAE} buffer. "
-            f"Only DUoS varies by DNO region — verify rates from {SPD} LC14 Charging Statement. "
-            f"All prices ex-{VAT}; add 5% for the domestic rate.")}
-</div>
-<div class="charts">
-  {_div(fig_tariff_vs_agile)}
-  {_div(fig_tariff_comparison)}
-  {_div(fig_tariff_3_mult)}
-  {_div(fig_tariff_4_mult) if fig_tariff_4_mult else ""}
-  {_div(fig_tariff_detail)}
-</div>
-'''}
-{"" if PUBLIC_MODE or not has_simulation else f'''
-<div id="simulation">
-  {_section("Customer Behaviour Simulation",
-            f"Modelled annual bills for a UK average household (8 kWh/day base), "
-            f"using Elexon PC1 seasonal load profile (winter/summer, weekday/weekend). "
-            f"<strong>All-in annual bill</strong>: wholesale + network charges + policy levies "
-            f"(RO/CfD/CM ~3.3p/kWh) + supplier opex (~1.5p/kWh) + standing charge (~61p/day) + 5% VAT. "
-            f"Ofgem {OFGEM_CAP_QUARTER} price cap shown for reference. "
-            f"Supplier cost = actual {EPEX} slot price × consumption (trading bought ahead at spot). "
-            f"Annualised from {sim_n_days}-slot historical window.")}
-</div>
-<div class="charts">
-  {_div(fig_sim_unit_rate)}
-  {_div(fig_sim_bills)}
-  {_div(fig_sim_profit)}
-  {_div(fig_sim_table)}
-</div>
-'''}
 <div id="drivers">
   {_section("Price Drivers",
             f"What drives the wholesale price? Gas generation and demand push it up; "
@@ -2191,7 +1414,7 @@ def generate(
   {_div(fig_leadtime)}
 </div>
 
-{"" if PUBLIC_MODE else f'''
+{f'''
 <div id="model">
   {_section("Model Detail",
             f"Two models — daily average and half-hourly per-slot — each using a Ridge + LightGBM ensemble. "
@@ -2224,14 +1447,12 @@ def generate(
 
 <footer>
   Wholesale prices: GB-wide {EPEX} SPOT day-ahead ·
-  {"" if PUBLIC_MODE else f"DUoS: {SPD} Central Scotland (region-specific; verify from LC14 Charging Statement) ·"}
   Weather: Open-Meteo UK average (6 sites: Edinburgh, Newcastle, Manchester, Birmingham, London, Cardiff) ·
   Solar: Sheffield Solar {PVLIVE} (GB national generation) ·
   Demand: Elexon {BMRS} {INDO} ·
   Generation mix: Elexon {BMRS} {FUELHH} (wind, gas, nuclear, pumped hydro, hydro, interconnectors) ·
   Day-ahead prices: Elexon {BMRS} {MID} ({EPEX} SPOT GB / {APXMIDP}) ·
   Commodity: Yahoo Finance ({TTF} gas, Brent crude)
-  {"" if PUBLIC_MODE else f"· Network charges retained in price; {VAT} removed"}
 </footer>
 
 </body>

@@ -18,8 +18,8 @@ load_dotenv()
 
 import pandas as pd
 
-from app import db, weather, gas, analysis, charts, dashboard, pvlive, demand, supply, midprice, simulation, octopus, storage, eia
-from app.config import WIND_SITES, UK_WEATHER_SITES, PUBLIC_MODE
+from app import db, weather, gas, analysis, charts, dashboard, pvlive, demand, supply, midprice, octopus, storage, eia
+from app.config import WIND_SITES, UK_WEATHER_SITES
 
 
 HISTORY_DAYS = 365  # how many days back to maintain
@@ -373,13 +373,19 @@ def cmd_analyse() -> None:
         n = db.upsert_halfhourly_predictions(today, hh_rows)
         print(f"[DB] Stored {n} half-hourly predictions in SQLite.")
 
-    # ── Export half-hourly forecasts to DynamoDB (for charging optimizer) ────
+    # ── Week-ahead LLM summary ─────────────────────────────────────────────────
     try:
-        from app.dynamodb import export_halfhourly_forecast
-        n = export_halfhourly_forecast(hh_pred, today)
-        print(f"[DynamoDB] Exported {n} half-hourly slots to PriceForecast table.")
+        from app.summary import generate_week_summary
+        print("[Summary] Generating week-ahead narrative …", end="", flush=True)
+        summary = generate_week_summary(predictions, hh_pred, df["avg_epex_p_kwh"].mean())
+        if summary:
+            db.upsert_forecast_summary(today, summary["week_summary"], summary.get("days", []))
+            print(f" done.")
+            print(f"  {summary['week_summary']}")
+        else:
+            print(" skipped (no OPENAI_API_KEY or call failed).")
     except Exception as e:
-        print(f"[DynamoDB] Export failed (non-fatal): {e}")
+        print(f" failed: {e}")
 
     # ── Backtest (out-of-sample hold-out) ─────────────────────────────────────
     print("[Backtest] Running 30-day hold-out test …", end="", flush=True)
@@ -424,45 +430,6 @@ def cmd_analyse() -> None:
     # ── Stored predictions vs actuals ─────────────────────────────────────────
     verifiable = db.get_verifiable_predictions(today)
 
-    # ── Tariff design (first 3 days only — forecast reliability window) ───────
-    if not PUBLIC_MODE:
-        # Flat margin variant (SUPPLIER_MARGIN p/kWh adder)
-        daily_tariffs_3 = analysis.design_daily_tariffs(hh_pred, days=3, slots="3",
-                                                         margin_mode="flat")
-        daily_tariffs_4 = analysis.design_daily_tariffs(hh_pred, days=3, slots="4",
-                                                         margin_mode="flat")
-        # Multiplier variant (wholesale × SUPPLIER_MULTIPLIER, like Octopus Agile)
-        daily_tariffs_3_mult = analysis.design_daily_tariffs(hh_pred, days=3, slots="3",
-                                                              margin_mode="multiplier")
-        daily_tariffs_4_mult = analysis.design_daily_tariffs(hh_pred, days=3, slots="4",
-                                                              margin_mode="multiplier")
-
-        # ── Agile price history for tariff comparison chart (last 60 days) ─────────
-        price_hist_rows = db.get_halfhourly_prices(today - timedelta(days=60), today)
-        price_hist = pd.DataFrame(
-            price_hist_rows,
-            columns=["datetime", "price_ex_vat", "price_inc_vat", "wholesale_price", "is_peak"],
-        ) if price_hist_rows else pd.DataFrame()
-
-        # ── Customer behaviour simulation ─────────────────────────────────────────
-        print("[Simulation] Running customer behaviour scenarios …", end="", flush=True)
-        sim_df = simulation.run_simulation(price_hist)
-        if not sim_df.empty:
-            r0 = sim_df[sim_df["scenario"] == "no_shift"].iloc[0]
-            rev = sim_df[sim_df["scenario"] == "ev_household"].iloc[0]
-            print(f" no-shift: £{r0['cust_bill_ours_annual_gbp']:.0f}/yr  "
-                  f"EV household: £{rev['cust_bill_ours_annual_gbp']:.0f}/yr  "
-                  f"(Agile: £{r0['cust_bill_agile_annual_gbp']:.0f}/yr)")
-        else:
-            print(" skipped — no history data.")
-    else:
-        daily_tariffs_3 = None
-        daily_tariffs_4 = None
-        daily_tariffs_3_mult = None
-        daily_tariffs_4_mult = None
-        price_hist = pd.DataFrame()
-        sim_df = pd.DataFrame()
-
     # ── PNG charts ────────────────────────────────────────────────────────────
     print("\n[Charts]   Saving PNGs …")
     ts = charts.plot_time_series(df)
@@ -481,20 +448,15 @@ def cmd_analyse() -> None:
         verifiable_df=verifiable,
         hh_backtest_df=hh_backtest_df,
         hh_backtest_metrics=hh_backtest_metrics,
-        daily_tariffs_3=daily_tariffs_3,
-        daily_tariffs_4=daily_tariffs_4,
-        daily_tariffs_3_mult=daily_tariffs_3_mult,
-        daily_tariffs_4_mult=daily_tariffs_4_mult,
         daily_predictions=predictions,
-        price_hist=price_hist,
         leadtime_detail_df=leadtime_detail_df,
         leadtime_metrics=leadtime_metrics,
         hh_hourly_profile=hh_hourly_profile,
-        sim_df=sim_df,
         ensemble=ensemble,
         hh_ensemble=hh_ensemble,
         wfcv_detail=wfcv_detail,
         wfcv_metrics=wfcv_metrics,
+        forecast_summary=db.get_forecast_summary(today),
     )
     print(f" {dash_path}")
 

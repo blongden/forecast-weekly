@@ -108,6 +108,14 @@ def init_db() -> None:
                 PRIMARY KEY (predicted_on, datetime_utc)
             );
 
+            CREATE TABLE IF NOT EXISTS forecast_summary (
+                predicted_on   TEXT NOT NULL,
+                week_summary   TEXT,
+                days_json      TEXT,
+                created_at     TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (predicted_on)
+            );
+
             CREATE TABLE IF NOT EXISTS demand_halfhourly (
                 datetime_utc  TEXT PRIMARY KEY,  -- ISO-8601 UTC, period-start (aligns with prices)
                 demand_mw     REAL               -- GB Initial National Demand Outturn (MW)
@@ -764,6 +772,48 @@ def get_midprice_date_range() -> tuple[str | None, str | None]:
             "SELECT MIN(datetime_utc), MAX(datetime_utc) FROM market_index_halfhourly"
         ).fetchone()
     return row[0], row[1]
+
+
+def upsert_forecast_summary(predicted_on, week_summary: str, days: list) -> None:
+    import json
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO forecast_summary (predicted_on, week_summary, days_json)
+               VALUES (?, ?, ?)
+               ON CONFLICT(predicted_on) DO UPDATE SET
+                   week_summary = excluded.week_summary,
+                   days_json    = excluded.days_json,
+                   created_at   = datetime('now')""",
+            (str(predicted_on), week_summary, json.dumps(days)),
+        )
+
+
+def get_forecast_summary(predicted_on) -> dict | None:
+    import json
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT week_summary, days_json FROM forecast_summary WHERE predicted_on = ?",
+            (str(predicted_on),),
+        ).fetchone()
+    if not row:
+        return None
+    return {"week_summary": row[0], "days": json.loads(row[1])}
+
+
+def get_last_complete_midprice_date(min_slots: int = 46):
+    """Return the latest date that has at least `min_slots` HH entries, or None."""
+    from datetime import date as _date
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT date(datetime_utc) AS d
+               FROM market_index_halfhourly
+               GROUP BY d
+               HAVING COUNT(*) >= ?
+               ORDER BY d DESC
+               LIMIT 1""",
+            (min_slots,),
+        ).fetchone()
+    return _date.fromisoformat(row[0]) if row else None
 
 
 def get_halfhourly_midprice(date_from: date, date_to: date) -> list:

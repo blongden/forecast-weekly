@@ -74,20 +74,29 @@ def _parse_response(payload: dict) -> list[dict]:
 
 
 def missing_midprice_ranges(date_from: date, date_to: date) -> list[tuple[date, date]]:
-    """Return date ranges not yet stored in market_index_halfhourly."""
+    """Return date ranges not yet stored in market_index_halfhourly.
+
+    Uses the last *complete* day (>=46 HH slots) as the boundary rather than
+    the raw MAX(datetime_utc), which can be a single midnight slot that makes
+    an incomplete day look covered.
+    """
     min_dt, max_dt = db.get_midprice_date_range()
 
     if min_dt is None:
         return [(date_from, date_to)]
 
     stored_min = date.fromisoformat(min_dt[:10])
-    stored_max = date.fromisoformat(max_dt[:10])
+
+    # Find the last day with a full set of slots (>=46 allows for DST transitions)
+    last_complete = db.get_last_complete_midprice_date(min_slots=46)
+    if last_complete is None:
+        return [(date_from, date_to)]
 
     gaps = []
     if date_from < stored_min:
         gaps.append((date_from, stored_min - timedelta(days=1)))
-    if date_to > stored_max:
-        safe_to = min(date_to, date.today() - timedelta(days=1))
-        if stored_max < safe_to:
-            gaps.append((stored_max + timedelta(days=1), safe_to))
+    if date_to > last_complete:
+        fetch_from = last_complete + timedelta(days=1)
+        if fetch_from <= date_to:
+            gaps.append((fetch_from, date_to))
     return gaps

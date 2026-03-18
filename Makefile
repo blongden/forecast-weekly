@@ -74,15 +74,15 @@ cdk-install:
 
 ## cdk-synth    : synthesise CloudFormation template (dry run)
 cdk-synth:
-	cd infra && cdk synth
+	cd infra && CDK_DOCKER=podman cdk synth
 
 ## cdk-deploy   : deploy all AWS infrastructure
 cdk-deploy:
-	cd infra && cdk deploy --require-approval broadening
+	cd infra && CDK_DOCKER=podman cdk deploy --require-approval broadening
 
 ## cdk-destroy  : tear down all AWS infrastructure
 cdk-destroy:
-	cd infra && cdk destroy
+	cd infra && CDK_DOCKER=podman cdk destroy
 
 ## help         : list available targets
 help:

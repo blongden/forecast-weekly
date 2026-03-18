@@ -109,7 +109,6 @@ class EnergyAnalysisStack(Stack):
                 log_retention=logs.RetentionDays.TWO_WEEKS,
             ),
             environment={
-                "PUBLIC_MODE": "1",
                 "DASHBOARD_BUCKET": dashboard_bucket.bucket_name,
                 "CLOUDFRONT_DISTRIBUTION_ID": distribution.distribution_id,
                 "DB_PATH": "/data/energy.db",
@@ -120,6 +119,7 @@ class EnergyAnalysisStack(Stack):
                 "GIE_API_KEY": ecs.Secret.from_secrets_manager(api_keys, "GIE_API_KEY"),
                 "EIA_API_KEY": ecs.Secret.from_secrets_manager(api_keys, "EIA_API_KEY"),
                 "ENTSOE_API_KEY": ecs.Secret.from_secrets_manager(api_keys, "ENTSOE_API_KEY"),
+                "OPENAI_API_KEY": ecs.Secret.from_secrets_manager(api_keys, "OPENAI_API_KEY"),
             },
             stop_timeout=Duration.seconds(120),
         )
@@ -137,19 +137,6 @@ class EnergyAnalysisStack(Stack):
             iam.PolicyStatement(
                 actions=["cloudfront:CreateInvalidation"],
                 resources=[f"arn:aws:cloudfront::{self.account}:distribution/{distribution.distribution_id}"],
-            ),
-        )
-
-        # Grant DynamoDB write access for PriceForecast table (shared with ev-smart)
-        task_def.task_role.add_to_policy(
-            iam.PolicyStatement(
-                actions=[
-                    "dynamodb:PutItem",
-                    "dynamodb:BatchWriteItem",
-                ],
-                resources=[
-                    f"arn:aws:dynamodb:eu-west-2:{self.account}:table/PriceForecast",
-                ],
             ),
         )
 
