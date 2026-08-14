@@ -58,22 +58,23 @@ EventBridge (13:00 UTC daily) ───→ ECS Fargate task
                                      │
                             CloudFront (CDN)
                                      │
-                    https://d2mhube2im5c6y.cloudfront.net
+                    https://d16khkgn2figlo.cloudfront.net
 ```
 
 ### Resources
 
 | Resource | Name / ID | Purpose |
 |---|---|---|
-| ECS Cluster | `EnergyAnalysis-Cluster…` | Runs the Fargate task |
+| AWS Account | `711695043600` (forecast-weekly) | Dedicated isolated account, org management: `627266360979` |
+| ECS Cluster | `EnergyAnalysis-ClusterEB0386A7-zz6UZzcErUMW` | Runs the Fargate task |
 | ECS Task Definition | `EnergyAnalysisTaskDefE9704C45` | 1 vCPU, 4 GB RAM |
-| ECR Repository | `cdk-hnb659fds-container-assets-627266360979-eu-west-2` | Docker image storage |
-| EFS Filesystem | `fs-058350fc55e9da2e4` | Persistent SQLite DB at `/data/energy.db` |
+| ECR Repository | `cdk-hnb659fds-container-assets-711695043600-eu-west-2` | Docker image storage |
+| EFS Filesystem | `fs-0af287c838d2820ff` | Persistent SQLite DB at `/data/energy.db` |
 | S3 Bucket | `energyanalysis-dashboard…` | Static dashboard HTML + chart PNGs |
-| CloudFront | `d2mhube2im5c6y.cloudfront.net` | HTTPS CDN in front of S3 |
-| EventBridge Rule | `EnergyAnalysis-DailyRun…` | Triggers Fargate at 13:00 UTC daily |
-| Secrets Manager | `EnergyAnalysis/ApiKeys` | API keys injected as env vars at runtime |
-| IAM Role | `github-actions-forecast-weekly` | GitHub Actions deploy role (OIDC) |
+| CloudFront | `d16khkgn2figlo.cloudfront.net` | HTTPS CDN in front of S3 |
+| EventBridge Rule | `EnergyAnalysis-DailyRunDEF7747D-lt8qiUZido6W` | Triggers Fargate at 13:00 UTC daily |
+| Secrets Manager | `ApiKeys3BB3983D-DBoTRntuXRPa` | API keys injected as env vars at runtime |
+| IAM User | `github-actions-forecast-weekly` | GitHub Actions deploy credentials |
 
 ### How a daily run works
 
@@ -101,7 +102,8 @@ Keys are stored in AWS Secrets Manager (`EnergyAnalysis/ApiKeys`) and injected a
 
 ```bash
 aws secretsmanager put-secret-value \
-  --secret-id EnergyAnalysis/ApiKeys \
+  --secret-id ApiKeys3BB3983D-DBoTRntuXRPa \
+  --region eu-west-2 \
   --secret-string '{"GIE_API_KEY":"...","EIA_API_KEY":"...","ENTSOE_API_KEY":"...","OPENAI_API_KEY":"..."}'
 ```
 
@@ -128,12 +130,14 @@ CDK changes (new resources, schedule tweaks, etc.) must be deployed separately �
 
 ### To trigger a run manually
 
+Ensure your CLI is targeting the `forecast-weekly` account (`711695043600`) before running. You can assume the org access role or use a named profile.
+
 ```bash
 aws ecs run-task \
-  --cluster EnergyAnalysis-ClusterEB0386A7-uPPomgV9zj3O \
+  --cluster EnergyAnalysis-ClusterEB0386A7-zz6UZzcErUMW \
   --task-definition EnergyAnalysisTaskDefE9704C45 \
   --launch-type FARGATE \
-  --network-configuration "awsvpcConfiguration={subnets=[subnet-1bab2161],securityGroups=[sg-0fe23dcf606bf5bd4],assignPublicIp=ENABLED}" \
+  --network-configuration "awsvpcConfiguration={subnets=[subnet-0c6c3a2293c8d8710],securityGroups=[sg-0b8fe0f030d1de0f7],assignPublicIp=ENABLED}" \
   --region eu-west-2
 ```
 
