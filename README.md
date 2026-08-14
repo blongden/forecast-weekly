@@ -1,5 +1,7 @@
 # UK Electricity Price Analysis
 
+**Live dashboard: https://d2mhube2im5c6y.cloudfront.net**
+
 Fetches EPEX SPOT GB day-ahead wholesale prices, UK weather, GB generation mix, and commodity prices; fits Ridge + LightGBM ensemble models; and publishes an interactive 7-day forecast dashboard.
 
 ---
