@@ -9,7 +9,7 @@ import numpy as np
 from scipy import stats
 
 from app.config import CHARTS_DIR
-from app.analysis import WEATHER_VARS
+from app.features import WEATHER_VARS
 
 COLOURS = ["#2980b9", "#27ae60", "#f39c12", "#8e44ad"]
 PRICE_COLOUR      = "#e74c3c"

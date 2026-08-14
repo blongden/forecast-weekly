@@ -13,7 +13,7 @@ from plotly.subplots import make_subplots
 import os
 
 from app.config import BASE_DIR
-from app.analysis import ALL_FEATURE_LABELS
+from app.features import ALL_FEATURE_LABELS
 
 DASHBOARD_PATH = Path(os.environ.get("DASHBOARD_PATH", str(BASE_DIR / "index.html")))
 

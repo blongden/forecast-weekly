@@ -15,29 +15,9 @@ from app import config, db
 
 HISTORICAL_URL  = "https://archive-api.open-meteo.com/v1/archive"
 FORECAST_URL    = "https://api.open-meteo.com/v1/forecast"
-HOURLY_VARS     = "temperature_2m,wind_speed_10m,shortwave_radiation,precipitation"
 UK_WEATHER_VARS = "temperature_2m,shortwave_radiation,precipitation"
 WIND_SITE_VAR   = "wind_speed_100m"  # 100m hub height — better proxy for offshore turbines
 
-
-def _parse_hourly(data: dict) -> list[dict]:
-    """Parse Edinburgh-style full hourly data (includes wind_speed_10m)."""
-    times  = data["hourly"]["time"]
-    temps  = data["hourly"]["temperature_2m"]
-    winds  = data["hourly"]["wind_speed_10m"]
-    rads   = data["hourly"]["shortwave_radiation"]
-    precip = data["hourly"]["precipitation"]
-    return [
-        {
-            "datetime":            t,
-            "temperature_2m":      temps[i],
-            "wind_speed_10m":      winds[i],
-            "shortwave_radiation": rads[i],
-            "precipitation":       precip[i],
-        }
-        for i, t in enumerate(times)
-        if temps[i] is not None
-    ]
 
 
 def _parse_uk_hourly(data: dict, site_id: str) -> list[dict]:
@@ -173,48 +153,6 @@ def daily_from_hourly(df: "pd.DataFrame") -> "pd.DataFrame":
 
 
 # ── Edinburgh historical weather (kept for backwards compat / reference) ──────
-
-def fetch_historical(date_from: date, date_to: date) -> int:
-    """Fetch hourly historical Edinburgh weather into weather_hourly table."""
-    from app.config import LAT, LON
-    resp = requests.get(
-        HISTORICAL_URL,
-        params={
-            "latitude":   LAT,
-            "longitude":  LON,
-            "start_date": str(date_from),
-            "end_date":   str(date_to),
-            "hourly":     HOURLY_VARS,
-            "timezone":   config.TIMEZONE,
-        },
-        timeout=60,
-    )
-    resp.raise_for_status()
-    rows = _parse_hourly(resp.json())
-    n = db.upsert_weather(rows)
-    db.log_fetch("weather_historical", date_from, date_to, n)
-    return n
-
-
-def missing_weather_ranges(date_from: date, date_to: date) -> list[tuple[date, date]]:
-    """Return Edinburgh weather date ranges not yet in the DB."""
-    min_dt, max_dt = db.get_weather_date_range()
-
-    if min_dt is None:
-        return [(date_from, date_to)]
-
-    stored_min = date.fromisoformat(min_dt[:10])
-    stored_max = date.fromisoformat(max_dt[:10])
-
-    gaps = []
-    if date_from < stored_min:
-        gaps.append((date_from, stored_min - timedelta(days=1)))
-    if date_to > stored_max:
-        from datetime import date as date_cls
-        safe_to = min(date_to, date_cls.today() - timedelta(days=2))
-        if stored_max < safe_to:
-            gaps.append((stored_max + timedelta(days=1), safe_to))
-    return gaps
 
 
 # ── Offshore wind sites ───────────────────────────────────────────────────────
