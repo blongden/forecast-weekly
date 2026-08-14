@@ -7,32 +7,134 @@ Architecture, model internals, data sources, and schema details.
 ## Project structure
 
 ```text
-energy_analysis/
+forecast-weekly/
 ├── main.py               # CLI entry point (update / analyse / status)
 ├── requirements.txt
 ├── Makefile
 ├── Dockerfile
-├── energy.db             # SQLite database (auto-created on first run)
-├── index.html            # Generated interactive dashboard
-├── charts/               # Generated static PNG charts
-├── MODEL.md              # Model documentation
-└── app/
-    ├── config.py         # Constants: sites, paths, network charges, tariff params
-    ├── db.py             # SQLite schema + all query functions
-    ├── midprice.py       # Elexon BMRS APXMIDP EPEX price client
-    ├── weather.py        # Open-Meteo historical + forecast client
-    ├── pvlive.py         # Sheffield Solar PV_Live API client
-    ├── demand.py         # Elexon BMRS INDO demand client
-    ├── supply.py         # Elexon BMRS FUELHH generation mix client
-    ├── gas.py            # Yahoo Finance commodity + GIE gas storage + EIA oil client
-    ├── analysis.py       # Re-export shim (imports from features/models/backtest/tariff)
-    ├── features.py       # Feature dictionaries, data loading, feature engineering
-    ├── models.py         # Ridge + LightGBM fitting, prediction, ensemble blending
-    ├── backtest.py       # Hold-out tests, walk-forward CV, lead-time analysis
-    ├── tariff.py         # Time-of-use tariff design (band collapsing)
-    ├── simulation.py     # Customer behaviour simulation (tariff comparison)
-    ├── charts.py         # Matplotlib static PNG generation
-    └── dashboard.py      # Plotly HTML dashboard generation
+├── app/
+│   ├── config.py         # Constants: sites, paths, network charges, tariff params
+│   ├── db.py             # SQLite schema + all query functions
+│   ├── analysis.py       # Re-export shim (features / models / backtest)
+│   ├── features.py       # Feature dictionaries, data loading, feature engineering
+│   ├── models.py         # Ridge + LightGBM fitting, prediction, ensemble blending
+│   ├── backtest.py       # Hold-out tests, walk-forward CV, lead-time analysis
+│   ├── midprice.py       # Elexon BMRS APXMIDP EPEX price client
+│   ├── weather.py        # Open-Meteo historical + forecast client
+│   ├── pvlive.py         # Sheffield Solar PV_Live API client
+│   ├── demand.py         # Elexon BMRS INDO demand client
+│   ├── supply.py         # Elexon BMRS FUELHH generation mix client
+│   ├── gas.py            # Yahoo Finance commodity + GIE gas storage + EIA oil client
+│   ├── entsoe.py         # ENTSO-E scheduled exchanges + generation unavailability
+│   ├── sysprice.py       # Elexon BMRS system prices (balancing mechanism)
+│   ├── storage.py        # GIE AGSI+ gas storage client
+│   ├── eia.py            # EIA weekly crude oil inventory client
+│   ├── octopus.py        # Octopus Agile tariff prices (comparison only)
+│   ├── summary.py        # LLM week-ahead narrative (OpenAI)
+│   ├── charts.py         # Matplotlib static PNG generation
+│   └── dashboard.py      # Plotly HTML dashboard generation
+└── infra/
+    ├── app.py            # CDK app entry point
+    ├── stack.py          # Full AWS stack definition
+    └── setup-github-oidc.sh  # One-time OIDC + IAM role setup
+```
+
+---
+
+## Deployed infrastructure
+
+### Overview
+
+The pipeline runs entirely serverlessly on AWS. There is no always-on server.
+
+```
+GitHub push → GitHub Actions → ECR (new image)
+                                     │
+EventBridge (13:00 UTC daily) ───→ ECS Fargate task
+                                     │
+                              EFS (energy.db persists)
+                                     │
+                              S3 (index.html + charts)
+                                     │
+                            CloudFront (CDN)
+                                     │
+                    https://d2mhube2im5c6y.cloudfront.net
+```
+
+### Resources
+
+| Resource | Name / ID | Purpose |
+|---|---|---|
+| ECS Cluster | `EnergyAnalysis-Cluster…` | Runs the Fargate task |
+| ECS Task Definition | `EnergyAnalysisTaskDefE9704C45` | 1 vCPU, 4 GB RAM |
+| ECR Repository | `cdk-hnb659fds-container-assets-627266360979-eu-west-2` | Docker image storage |
+| EFS Filesystem | `fs-058350fc55e9da2e4` | Persistent SQLite DB at `/data/energy.db` |
+| S3 Bucket | `energyanalysis-dashboard…` | Static dashboard HTML + chart PNGs |
+| CloudFront | `d2mhube2im5c6y.cloudfront.net` | HTTPS CDN in front of S3 |
+| EventBridge Rule | `EnergyAnalysis-DailyRun…` | Triggers Fargate at 13:00 UTC daily |
+| Secrets Manager | `EnergyAnalysis/ApiKeys` | API keys injected as env vars at runtime |
+| IAM Role | `github-actions-forecast-weekly` | GitHub Actions deploy role (OIDC) |
+
+### How a daily run works
+
+1. EventBridge fires at 13:00 UTC (after the EPEX D+1 auction clears ~12:00 CET)
+2. Fargate pulls the latest Docker image from ECR and starts a task
+3. The EFS volume is mounted at `/data` — `energy.db` is already there from the previous run
+4. `main.py` runs: fetches only the delta since the last run (incremental), trains models, generates the dashboard
+5. `index.html` and chart PNGs are uploaded to S3; CloudFront cache is invalidated
+6. The container exits; EFS retains the updated `energy.db` for the next run
+
+### Database persistence
+
+`energy.db` lives on EFS and persists between runs. This means:
+- Historical predictions accumulate and are used for the Predicted vs Actual chart and lead-time accuracy analysis
+- The weather forecast archive grows over time, enabling lead-time interval scaling
+- Only the delta since the last run is fetched from APIs (typically one day of data)
+
+All data in the DB is re-fetchable from public APIs except for two tables which can only be captured in real time:
+- `daily_predictions` / `halfhourly_predictions` — what the model predicted on each past run
+- `weather_forecast_archive` / `wind_site_forecast_archive` — NWP forecasts as-of each run date
+
+### API keys
+
+Keys are stored in AWS Secrets Manager (`EnergyAnalysis/ApiKeys`) and injected as environment variables into the Fargate container at runtime. To update a key:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id EnergyAnalysis/ApiKeys \
+  --secret-string '{"GIE_API_KEY":"...","EIA_API_KEY":"...","ENTSOE_API_KEY":"...","OPENAI_API_KEY":"..."}'
+```
+
+For local development, keys go in `.env` (gitignored).
+
+### Deploying changes
+
+Push to `main`. The GitHub Actions workflow (`.github/workflows/deploy.yml`) will:
+1. Build and push a new Docker image to ECR (tagged with the commit SHA)
+2. Register a new ECS task definition revision pointing to the new image
+3. Update the EventBridge target to use the new revision
+
+The change takes effect on the next scheduled run at 13:00 UTC.
+
+### To redeploy the CDK stack (infrastructure changes)
+
+```bash
+cd infra
+pip install -r requirements.txt  # if not already installed
+cdk deploy
+```
+
+CDK changes (new resources, schedule tweaks, etc.) must be deployed separately — the GitHub Actions workflow only updates the application container, not the infrastructure.
+
+### To trigger a run manually
+
+```bash
+aws ecs run-task \
+  --cluster EnergyAnalysis-ClusterEB0386A7-uPPomgV9zj3O \
+  --task-definition EnergyAnalysisTaskDefE9704C45 \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[subnet-1bab2161],securityGroups=[sg-0fe23dcf606bf5bd4],assignPublicIp=ENABLED}" \
+  --region eu-west-2
 ```
 
 ---

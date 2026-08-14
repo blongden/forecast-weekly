@@ -30,6 +30,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::627266360979:role/github-actions-forecast-weekly
           aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
 
       - name: Log in to ECR
         uses: aws-actions/amazon-ecr-login@v2
