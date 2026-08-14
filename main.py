@@ -11,7 +11,8 @@ Usage
 """
 import os
 import sys
-from datetime import date, datetime, timedelta
+import time
+from datetime import date, datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -177,7 +178,9 @@ def cmd_update(verbose=True) -> None:
             print("[Supply]   GB generation mix up to date — nothing to fetch.")
 
     # ── EPEX SPOT GB day-ahead prices (Elexon BMRS MID / APXMIDP) ───────────────
-    mp_gaps = midprice.missing_midprice_ranges(start_date, today)
+    # Fetch up to tomorrow — D+1 prices are available after ~12:00 CET auction
+    tomorrow = today + timedelta(days=1)
+    mp_gaps = midprice.missing_midprice_ranges(start_date, tomorrow)
     if mp_gaps:
         for gap_start, gap_end in mp_gaps:
             if verbose:
@@ -288,6 +291,16 @@ def cmd_analyse() -> None:
         .reset_index()
     )
 
+    # ── D+1 actual EPEX prices ────────────────────────────────────────────────
+    tomorrow = today + timedelta(days=1)
+    tomorrow_hh_rows = db.get_halfhourly_midprice(tomorrow, tomorrow)
+    tomorrow_avg_epex = None
+    if tomorrow_hh_rows:
+        tomorrow_avg_epex = sum(r[1] for r in tomorrow_hh_rows) / len(tomorrow_hh_rows) * 0.1  # £/MWh → p/kWh
+        print(f"[D+1]      Tomorrow's EPEX actual: {tomorrow_avg_epex:.2f}p/kWh avg ({len(tomorrow_hh_rows)} slots)")
+    else:
+        print("[D+1]      No EPEX prices available for tomorrow — all days will be forecasted.")
+
     print("[Forecast] Fetching 7-day UK weather forecast …", end="", flush=True)
     fc_hourly = weather.fetch_uk_avg_forecast(days=7)
     print(" done.")
@@ -334,20 +347,111 @@ def cmd_analyse() -> None:
             })
     db.upsert_wind_site_forecast_archive(wind_archive_rows)
 
-    predictions = analysis.predict_ensemble(fc_daily, ensemble,
-                                             latest_commodity, site_forecasts,
-                                             df_historical=df)
-    hh_pred     = analysis.predict_halfhourly_ensemble(fc_hourly, hh_ensemble,
-                                                       latest_commodity, site_forecasts,
-                                                       df_historical=df_hh)
+    # ── Split forecast: D+2+ model predictions only (D+1 uses actuals) ─────
+    if tomorrow_avg_epex is not None:
+        # Filter weather forecast to D+2+ for model prediction
+        fc_daily_pred = fc_daily[fc_daily["date"].apply(
+            lambda d: (d.date() if hasattr(d, "date") else date.fromisoformat(str(d)[:10])) > tomorrow
+        )].copy()
+        fc_hourly_pred = fc_hourly[fc_hourly["datetime"].dt.date > tomorrow].copy()
+
+        # Use tomorrow's actual daily avg as lag-1 for D+2+ (instead of today's)
+        latest_commodity["epex_lag1_gbp_mwh"] = tomorrow_avg_epex / 0.1  # p/kWh → £/MWh
+
+        # Append tomorrow's actual HH prices to historical HH df so price_lag1_slot is real for D+2
+        from zoneinfo import ZoneInfo
+        _london = ZoneInfo("Europe/London")
+        tomorrow_hh_for_hist = []
+        for row in tomorrow_hh_rows:
+            dt_utc = pd.Timestamp(row[0]).tz_localize("UTC")
+            dt_local = dt_utc.tz_convert(_london)
+            tomorrow_hh_for_hist.append({
+                "datetime_local": dt_local,
+                "epex_price_p_kwh": row[1] * 0.1,  # £/MWh → p/kWh
+            })
+        if tomorrow_hh_for_hist:
+            df_hh_extended = pd.concat([df_hh, pd.DataFrame(tomorrow_hh_for_hist)], ignore_index=True)
+        else:
+            df_hh_extended = df_hh
+
+        # Model predictions for D+2+ — use recursive lag so each day's prediction
+        # feeds the next day's epex_lag1, rather than holding a stale constant.
+        if not fc_daily_pred.empty:
+            predictions_d2plus = analysis.predict_ensemble(fc_daily_pred, ensemble,
+                                                            latest_commodity, site_forecasts,
+                                                            df_historical=df,
+                                                            recursive_lag=True)
+        else:
+            predictions_d2plus = pd.DataFrame()
+        if not fc_hourly_pred.empty:
+            hh_pred_d2plus = analysis.predict_halfhourly_ensemble(fc_hourly_pred, hh_ensemble,
+                                                                    latest_commodity, site_forecasts,
+                                                                    df_historical=df_hh_extended)
+        else:
+            hh_pred_d2plus = pd.DataFrame()
+
+        # Build D+1 actual rows
+        d1_daily = pd.DataFrame([{
+            "date": pd.Timestamp(tomorrow),
+            "predicted_epex_p_kwh": tomorrow_avg_epex,
+            "pred_ridge": tomorrow_avg_epex,
+            "pred_lgbm": tomorrow_avg_epex,
+            "pred_q10": tomorrow_avg_epex,
+            "pred_q90": tomorrow_avg_epex,
+            "is_actual": True,
+        }])
+
+        d1_hh_rows = []
+        for row in tomorrow_hh_rows:
+            dt_utc = pd.Timestamp(row[0]).tz_localize("UTC")
+            dt_local = dt_utc.tz_convert(_london)
+            price_p = row[1] * 0.1  # £/MWh → p/kWh
+            d1_hh_rows.append({
+                "datetime_local": dt_local,
+                "predicted_epex_p_kwh": price_p,
+                "pred_ridge": price_p,
+                "pred_lgbm": price_p,
+                "pred_q10": price_p,
+                "pred_q90": price_p,
+                "is_actual": True,
+            })
+        d1_hh = pd.DataFrame(d1_hh_rows)
+
+        # Concat D+1 actuals + D+2+ forecasts
+        if not predictions_d2plus.empty:
+            if "is_actual" not in predictions_d2plus.columns:
+                predictions_d2plus["is_actual"] = False
+            predictions = pd.concat([d1_daily, predictions_d2plus], ignore_index=True)
+        else:
+            predictions = d1_daily
+        if not hh_pred_d2plus.empty:
+            if "is_actual" not in hh_pred_d2plus.columns:
+                hh_pred_d2plus["is_actual"] = False
+            hh_pred = pd.concat([d1_hh, hh_pred_d2plus], ignore_index=True)
+        else:
+            hh_pred = d1_hh
+    else:
+        # No tomorrow prices — forecast all days with recursive lag
+        predictions = analysis.predict_ensemble(fc_daily, ensemble,
+                                                 latest_commodity, site_forecasts,
+                                                 df_historical=df,
+                                                 recursive_lag=True)
+        hh_pred     = analysis.predict_halfhourly_ensemble(fc_hourly, hh_ensemble,
+                                                           latest_commodity, site_forecasts,
+                                                           df_historical=df_hh)
+        if "is_actual" not in predictions.columns:
+            predictions["is_actual"] = False
+        if "is_actual" not in hh_pred.columns:
+            hh_pred["is_actual"] = False
 
     analysis.print_summary(df, correlations, r2, model, scaler, fcols, predictions, r2_hh)
 
     # ── Store today's predictions in DB ───────────────────────────────────────
     pred_rows = [
         {
-            "date":                str(row["date"].date()),
+            "date":                str(row["date"].date() if hasattr(row["date"], "date") else row["date"]),
             "predicted_epex_p_kwh": row["predicted_epex_p_kwh"],
+            "is_actual":           int(bool(row.get("is_actual", False))),
         }
         for _, row in predictions.iterrows()
     ]
@@ -369,6 +473,7 @@ def cmd_analyse() -> None:
                 "predicted_epex_p_kwh": row["predicted_epex_p_kwh"],
                 "pred_q10":             row.get("pred_q10"),
                 "pred_q90":             row.get("pred_q90"),
+                "is_actual":            int(bool(row.get("is_actual", False))),
             })
         n = db.upsert_halfhourly_predictions(today, hh_rows)
         print(f"[DB] Stored {n} half-hourly predictions in SQLite.")
@@ -429,6 +534,11 @@ def cmd_analyse() -> None:
 
     # ── Stored predictions vs actuals ─────────────────────────────────────────
     verifiable = db.get_verifiable_predictions(today)
+
+    # ── Widen uncertainty bands for longer lead days ──────────────────────────
+    if leadtime_metrics:
+        predictions = analysis.scale_intervals_by_leadtime(predictions, leadtime_metrics, today)
+        hh_pred     = analysis.scale_hh_intervals_by_leadtime(hh_pred, leadtime_metrics, today)
 
     # ── PNG charts ────────────────────────────────────────────────────────────
     print("\n[Charts]   Saving PNGs …")
@@ -539,6 +649,19 @@ def main() -> None:
         cmd_status()
     elif cmd == "all":
         cmd_update()
+
+        # Retry loop: wait for tomorrow's EPEX prices if not yet available
+        today = date.today()
+        tomorrow = today + timedelta(days=1)
+        deadline = datetime(today.year, today.month, today.day, 16, 0, tzinfo=timezone.utc)
+        while not db.has_complete_midprice(tomorrow, min_slots=46):
+            if datetime.now(timezone.utc) >= deadline:
+                print("ERROR: Tomorrow's EPEX prices not available by 16:00 UTC deadline")
+                sys.exit(1)
+            print(f"[Wait] Tomorrow's EPEX prices not yet available, retrying in 5 min …")
+            time.sleep(300)
+            midprice.fetch_midprice(tomorrow, tomorrow)
+
         cmd_analyse()
     else:
         print(__doc__)

@@ -71,17 +71,21 @@ def generate_week_summary(
 Context:
 - These are EPEX SPOT GB day-ahead wholesale electricity prices in p/kWh (pence per kilowatt-hour)
 - The 12-month historical average is {hist_mean:.1f}p/kWh
-- Peak hours are 16:00-19:00, off-peak is the rest of the day
-- Prices are driven by wind/solar generation, gas prices, demand, and interconnector flows
+- Peak hours are 16:00-19:00 — this is normally the most expensive period (evening demand surge, less solar)
+- Off-peak is all other hours — can include cheap overnight slots AND cheap solar midday slots in summer
+- Because summer solar pulls down the off-peak average, it is possible (especially in summer) for the off-peak average to appear lower than the peak average; take care to interpret this correctly
+- "Shift load" advice should always say to move demand to the CHEAPEST period, whatever that is. If peak is cheap that week, say run appliances during peak. If off-peak is cheap, say avoid peak
+- D+1 (tomorrow) is the settled day-ahead auction price — confirmed, not a forecast
+- D+2 onwards are model forecasts with increasing uncertainty
 
-Forecast data:
+Forecast data (peak_p_kwh = average over 16:00-19:00, offpeak_p_kwh = rest of day):
 {json.dumps(daily_context, indent=2)}
 
 Write a JSON response with:
 1. "week_summary": A 1-2 sentence overview of the week ahead (trends, notable days, comparison to historical average). Be specific with numbers.
-2. "days": An array of objects, one per forecast day, each with "date" (matching the input) and "summary" (a single punchy sentence about that day's price — mention if it's cheap/expensive, peak vs off-peak spread, good for shifting load, etc.)
+2. "days": An array of objects, one per forecast day, each with "date" (matching the input) and "summary" (a single punchy sentence — state whether the day is cheap or expensive, identify the cheapest window, and give one clear action: e.g. "Run the dishwasher after 10pm" or "Avoid the 16:00-19:00 peak")
 
-Keep language accessible — avoid jargon. Be direct and useful. Output valid JSON only."""
+Keep language accessible — no jargon. Be direct and useful. Output valid JSON only."""
 
     try:
         response = client.chat.completions.create(

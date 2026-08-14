@@ -260,11 +260,29 @@ def _find_blend_weight(df: pd.DataFrame, n_folds: int = 4,
 def predict_ensemble(forecast_df: pd.DataFrame, ensemble: dict,
                       latest_commodity: dict | None = None,
                       site_forecasts: dict | None = None,
-                      df_historical: pd.DataFrame | None = None) -> pd.DataFrame:
+                      df_historical: pd.DataFrame | None = None,
+                      recursive_lag: bool = False) -> pd.DataFrame:
     """
     Predict using the Ridge + LightGBM ensemble. Returns a DataFrame with
     predicted_epex_p_kwh (blended), pred_ridge, pred_lgbm, pred_q10, pred_q90.
+
+    When recursive_lag=True, iterates day-by-day and feeds each blended prediction
+    back as epex_lag1_gbp_mwh for the next day, rather than holding the initial
+    value constant across the whole forecast horizon.
     """
+    if recursive_lag and len(forecast_df) > 1:
+        results = []
+        lc = dict(latest_commodity or {})
+        for i in range(len(forecast_df)):
+            day_df = forecast_df.iloc[[i]].copy()
+            if i > 0 and results:
+                prev_p_kwh = results[-1]["predicted_epex_p_kwh"].iloc[0]
+                lc = {**lc, "epex_lag1_gbp_mwh": prev_p_kwh * 10}  # p/kWh → £/MWh
+            day_result = predict_ensemble(day_df, ensemble, lc, site_forecasts, df_historical,
+                                          recursive_lag=False)
+            results.append(day_result)
+        return pd.concat(results, ignore_index=True)
+
     w = ensemble["blend_weight"]
     ridge = ensemble["ridge"]
     lgbm = ensemble["lgbm"]
@@ -877,6 +895,85 @@ def predict_halfhourly_ensemble(
     if not q90_pred.empty:
         result["pred_q90"] = q90_pred["predicted_epex_p_kwh"].values
 
+    return result
+
+
+# ── Interval calibration ──────────────────────────────────────────────────────
+
+def scale_intervals_by_leadtime(
+    predictions: pd.DataFrame,
+    leadtime_metrics: dict,
+    today: "date",
+) -> pd.DataFrame:
+    """
+    Widen Q10/Q90 bands in proportion to observed MAE degradation with lead time.
+
+    Scale factor for lead day L = mae[L] / mae[1].  Rows marked is_actual=True
+    are left unchanged.  Requires pred_q10 and pred_q90 columns.
+    """
+    if not leadtime_metrics or predictions.empty:
+        return predictions
+    if "pred_q10" not in predictions.columns or "pred_q90" not in predictions.columns:
+        return predictions
+
+    mae_d1 = leadtime_metrics.get(1, {}).get("mae")
+    if not mae_d1:
+        return predictions
+
+    result = predictions.copy()
+    for idx, row in result.iterrows():
+        if row.get("is_actual"):
+            continue
+        d = pd.Timestamp(row["date"]).date()
+        lead = (d - today).days
+        mae_lead = leadtime_metrics.get(lead, {}).get("mae")
+        if not mae_lead or mae_lead <= mae_d1:
+            continue
+        scale = mae_lead / mae_d1
+        mid = (row["pred_q10"] + row["pred_q90"]) / 2
+        half_width = (row["pred_q90"] - row["pred_q10"]) / 2
+        result.at[idx, "pred_q10"] = mid - half_width * scale
+        result.at[idx, "pred_q90"] = mid + half_width * scale
+    return result
+
+
+def scale_hh_intervals_by_leadtime(
+    hh_pred: pd.DataFrame,
+    leadtime_metrics: dict,
+    today: "date",
+) -> pd.DataFrame:
+    """
+    Apply lead-time interval scaling to half-hourly predictions.
+    Lead day is derived from the date of each slot relative to today.
+    """
+    if not leadtime_metrics or hh_pred.empty:
+        return hh_pred
+    if "pred_q10" not in hh_pred.columns or "pred_q90" not in hh_pred.columns:
+        return hh_pred
+
+    mae_d1 = leadtime_metrics.get(1, {}).get("mae")
+    if not mae_d1:
+        return hh_pred
+
+    result = hh_pred.copy()
+    result["_date"] = pd.to_datetime(result["datetime_local"]).dt.date
+    scale_by_lead = {
+        lead: metrics["mae"] / mae_d1
+        for lead, metrics in leadtime_metrics.items()
+        if metrics.get("mae", 0) > mae_d1
+    }
+
+    for lead, scale in scale_by_lead.items():
+        target_date = today + pd.Timedelta(days=lead)
+        mask = (result["_date"] == target_date.date()) & (~result.get("is_actual", pd.Series(False, index=result.index)))
+        if not mask.any():
+            continue
+        mid = (result.loc[mask, "pred_q10"] + result.loc[mask, "pred_q90"]) / 2
+        half_width = (result.loc[mask, "pred_q90"] - result.loc[mask, "pred_q10"]) / 2
+        result.loc[mask, "pred_q10"] = mid - half_width * scale
+        result.loc[mask, "pred_q90"] = mid + half_width * scale
+
+    result.drop(columns=["_date"], inplace=True)
     return result
 
 
