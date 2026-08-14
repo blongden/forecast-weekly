@@ -535,6 +535,14 @@ def cmd_analyse() -> None:
     # ── Stored predictions vs actuals ─────────────────────────────────────────
     verifiable = db.get_verifiable_predictions(today)
 
+    # ── Bias correction from recent prediction errors ─────────────────────────
+    bias_by_lead = analysis.compute_bias_by_lead(verifiable, window_days=30)
+    if bias_by_lead:
+        leads = sorted(bias_by_lead.keys())
+        print("[Bias]     " + "  ".join(f"D+{l} {bias_by_lead[l]:+.2f}p" for l in leads))
+        predictions = analysis.apply_bias_correction(predictions, bias_by_lead, today)
+        hh_pred     = analysis.apply_bias_correction_hh(hh_pred, bias_by_lead, today)
+
     # ── Widen uncertainty bands for longer lead days ──────────────────────────
     if leadtime_metrics:
         predictions = analysis.scale_intervals_by_leadtime(predictions, leadtime_metrics, today)

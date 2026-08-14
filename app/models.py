@@ -977,6 +977,106 @@ def scale_hh_intervals_by_leadtime(
     return result
 
 
+# ── Prediction bias correction ────────────────────────────────────────────────
+
+def compute_bias_by_lead(verifiable: list, window_days: int = 30) -> dict:
+    """
+    Return {lead_day: mean_bias} where bias = mean(predicted - actual).
+
+    Uses only rows from the most recent `window_days` to stay current.
+    Needs at least 3 samples per lead day to be reliable.
+    """
+    if not verifiable:
+        return {}
+
+    from datetime import date as date_type
+    import collections, statistics
+
+    cutoff = pd.Timestamp.today().date() - pd.Timedelta(days=window_days)
+    errors: dict[int, list] = collections.defaultdict(list)
+
+    for row in verifiable:
+        predicted_on = pd.Timestamp(row[0]).date()
+        target_date  = pd.Timestamp(row[1]).date()
+        predicted    = row[2]
+        actual       = row[3]
+        if predicted is None or actual is None:
+            continue
+        if predicted_on < cutoff:
+            continue
+        lead = (target_date - predicted_on).days
+        if lead < 1:
+            continue
+        errors[lead].append(predicted - actual)
+
+    return {
+        lead: statistics.mean(errs)
+        for lead, errs in errors.items()
+        if len(errs) >= 3
+    }
+
+
+def apply_bias_correction(
+    predictions: pd.DataFrame,
+    bias_by_lead: dict,
+    today: "date",
+) -> pd.DataFrame:
+    """
+    Shift predicted_epex_p_kwh, pred_q10, pred_q90 by −bias for each lead day.
+
+    Interval width is preserved — all three columns shift by the same amount.
+    Rows marked is_actual are left unchanged.
+    """
+    if not bias_by_lead or predictions.empty:
+        return predictions
+
+    result = predictions.copy()
+    for idx, row in result.iterrows():
+        if row.get("is_actual"):
+            continue
+        d = pd.Timestamp(row["date"]).date()
+        lead = (d - today).days
+        bias = bias_by_lead.get(lead)
+        if bias is None:
+            continue
+        result.at[idx, "predicted_epex_p_kwh"] = row["predicted_epex_p_kwh"] - bias
+        if "pred_q10" in result.columns:
+            result.at[idx, "pred_q10"] = row["pred_q10"] - bias
+        if "pred_q90" in result.columns:
+            result.at[idx, "pred_q90"] = row["pred_q90"] - bias
+    return result
+
+
+def apply_bias_correction_hh(
+    hh_pred: pd.DataFrame,
+    bias_by_lead: dict,
+    today: "date",
+) -> pd.DataFrame:
+    """
+    Apply bias correction to the half-hourly forecast dataframe.
+    """
+    if not bias_by_lead or hh_pred.empty:
+        return hh_pred
+
+    result = hh_pred.copy()
+    result["_date"] = pd.to_datetime(result["datetime_local"]).dt.date
+
+    for lead, bias in bias_by_lead.items():
+        target_date = today + pd.Timedelta(days=lead)
+        is_actual = result.get("is_actual", pd.Series(False, index=result.index))
+        mask = (result["_date"] == target_date.date()) & (~is_actual)
+        if not mask.any():
+            continue
+        result.loc[mask, "predicted_epex_p_kwh"] -= bias
+        if "pred_q10" in result.columns:
+            result.loc[mask, "pred_q10"] -= bias
+        if "pred_q90" in result.columns:
+            result.loc[mask, "pred_q90"] -= bias
+
+    result.drop(columns=["_date"], inplace=True)
+    return result
+
+
 # ── Summary ────────────────────────────────────────────────────────────────────
 
 def print_summary(df: pd.DataFrame, correlations: dict, r2: float,
