@@ -11,7 +11,6 @@ Usage
 """
 import os
 import sys
-import time
 from datetime import date, datetime, timedelta, timezone
 
 from dotenv import load_dotenv
@@ -178,7 +177,8 @@ def cmd_update(verbose=True) -> None:
             print("[Supply]   GB generation mix up to date — nothing to fetch.")
 
     # ── EPEX SPOT GB day-ahead prices (Elexon BMRS MID / APXMIDP) ───────────────
-    # Fetch up to tomorrow — D+1 prices are available after ~12:00 CET auction
+    # Elexon publishes APXMIDP in real-time as each settlement period occurs,
+    # not day-ahead. Tomorrow's prices will only appear tomorrow.
     tomorrow = today + timedelta(days=1)
     mp_gaps = midprice.missing_midprice_ranges(start_date, tomorrow)
     if mp_gaps:
@@ -657,19 +657,6 @@ def main() -> None:
         cmd_status()
     elif cmd == "all":
         cmd_update()
-
-        # Retry loop: wait for tomorrow's EPEX prices if not yet available
-        today = date.today()
-        tomorrow = today + timedelta(days=1)
-        deadline = datetime(today.year, today.month, today.day, 16, 0, tzinfo=timezone.utc)
-        while not db.has_complete_midprice(tomorrow, min_slots=46):
-            if datetime.now(timezone.utc) >= deadline:
-                print("ERROR: Tomorrow's EPEX prices not available by 16:00 UTC deadline")
-                sys.exit(1)
-            print(f"[Wait] Tomorrow's EPEX prices not yet available, retrying in 5 min …")
-            time.sleep(300)
-            midprice.fetch_midprice(tomorrow, tomorrow)
-
         cmd_analyse()
     else:
         print(__doc__)
