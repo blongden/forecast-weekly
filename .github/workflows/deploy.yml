@@ -1,0 +1,98 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write   # required for OIDC
+  contents: read
+
+env:
+  AWS_REGION:       eu-west-2
+  ECR_REGISTRY:     627266360979.dkr.ecr.eu-west-2.amazonaws.com
+  ECR_REPOSITORY:   cdk-hnb659fds-container-assets-627266360979-eu-west-2
+  TASK_DEF_FAMILY:  EnergyAnalysisTaskDefE9704C45
+  CLUSTER_ARN:      arn:aws:ecs:eu-west-2:627266360979:cluster/EnergyAnalysis-ClusterEB0386A7-uPPomgV9zj3O
+  EB_RULE:          EnergyAnalysis-DailyRunDEF7747D-KQZLhxQuSBPa
+  EB_ROLE_ARN:      arn:aws:iam::627266360979:role/EnergyAnalysis-TaskDefEventsRoleFB3B67B8-QDnsHwaQuK0j
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::627266360979:role/github-actions-forecast-weekly
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        id: build
+        run: |
+          IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}
+          docker build -t "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
+          echo "image=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+      - name: Register new task definition revision
+        id: task-def
+        run: |
+          IMAGE="${{ steps.build.outputs.image }}"
+
+          # Fetch current task definition, strip read-only fields, swap image
+          aws ecs describe-task-definition \
+            --task-definition "$TASK_DEF_FAMILY" \
+            --query 'taskDefinition' \
+            --output json \
+          | jq --arg IMAGE "$IMAGE" '
+              .containerDefinitions[0].image = $IMAGE
+              | del(.taskDefinitionArn, .revision, .status,
+                    .requiresAttributes, .placementConstraints,
+                    .compatibilities, .registeredAt, .registeredBy)
+            ' > new-task-def.json
+
+          NEW_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://new-task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          echo "task_def_arn=$NEW_ARN" >> "$GITHUB_OUTPUT"
+          echo "Registered: $NEW_ARN"
+
+      - name: Update EventBridge target to new revision
+        run: |
+          NEW_TASK_DEF_ARN="${{ steps.task-def.outputs.task_def_arn }}"
+
+          aws events put-targets \
+            --rule "$EB_RULE" \
+            --region "$AWS_REGION" \
+            --targets "[{
+              \"Id\": \"Target0\",
+              \"Arn\": \"$CLUSTER_ARN\",
+              \"RoleArn\": \"$EB_ROLE_ARN\",
+              \"Input\": \"{}\",
+              \"EcsParameters\": {
+                \"TaskDefinitionArn\": \"$NEW_TASK_DEF_ARN\",
+                \"TaskCount\": 1,
+                \"LaunchType\": \"FARGATE\",
+                \"NetworkConfiguration\": {
+                  \"awsvpcConfiguration\": {
+                    \"Subnets\": [\"subnet-1bab2161\", \"subnet-e97aa3a5\", \"subnet-3a8ec053\"],
+                    \"SecurityGroups\": [\"sg-0fe23dcf606bf5bd4\"],
+                    \"AssignPublicIp\": \"ENABLED\"
+                  }
+                },
+                \"EnableECSManagedTags\": false,
+                \"EnableExecuteCommand\": false
+              }
+            }]"
+
+          echo "EventBridge updated to $NEW_TASK_DEF_ARN"
