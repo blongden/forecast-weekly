@@ -140,10 +140,10 @@ class EnergyAnalysisStack(Stack):
             ),
         )
 
-        # ── EventBridge Schedule (10:00 UTC daily) ───────────────────────────
+        # ── EventBridge Schedule (13:00 UTC daily — after EPEX D+1 auction clears ~12:00 CET)
         rule = events.Rule(self, "DailyRun",
-            schedule=events.Schedule.cron(minute="0", hour="10"),
-            description="Run energy analysis pipeline daily at 10:00 UTC",
+            schedule=events.Schedule.cron(minute="0", hour="13"),
+            description="Run energy analysis pipeline daily at 13:00 UTC (after EPEX D+1 clears)",
         )
 
         rule.add_target(

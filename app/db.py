@@ -194,6 +194,7 @@ def init_db() -> None:
         _migrate_generation_schema(conn)
         _migrate_predictions_schema(conn)
         _migrate_commodity_schema(conn)
+        _migrate_is_actual_column(conn)
 
 
 def _migrate_predictions_schema(conn: sqlite3.Connection) -> None:
@@ -235,6 +236,14 @@ def _migrate_commodity_schema(conn: sqlite3.Connection) -> None:
     for col, typ in new_cols:
         if col not in existing:
             conn.execute(f"ALTER TABLE commodity_prices ADD COLUMN {col} {typ}")
+
+
+def _migrate_is_actual_column(conn: sqlite3.Connection) -> None:
+    """Add is_actual column to prediction tables if missing."""
+    for table in ("daily_predictions", "halfhourly_predictions"):
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if "is_actual" not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN is_actual INTEGER DEFAULT 0")
 
 
 def commodity_needs_currency_data() -> bool:
@@ -600,9 +609,9 @@ def upsert_daily_predictions(predicted_on: date, rows: list[dict]) -> int:
     with get_conn() as conn:
         conn.executemany(
             """INSERT OR REPLACE INTO daily_predictions
-               (predicted_on, date, predicted_epex_p_kwh)
-               VALUES (:predicted_on, :date, :predicted_epex_p_kwh)""",
-            [{"predicted_on": str(predicted_on), **r} for r in rows],
+               (predicted_on, date, predicted_epex_p_kwh, is_actual)
+               VALUES (:predicted_on, :date, :predicted_epex_p_kwh, :is_actual)""",
+            [{"predicted_on": str(predicted_on), "is_actual": 0, **r} for r in rows],
         )
     return len(rows)
 
@@ -614,9 +623,9 @@ def upsert_halfhourly_predictions(predicted_on: date, rows: list[dict]) -> int:
     with get_conn() as conn:
         conn.executemany(
             """INSERT OR REPLACE INTO halfhourly_predictions
-               (predicted_on, datetime_utc, predicted_epex_p_kwh, pred_q10, pred_q90)
-               VALUES (:predicted_on, :datetime_utc, :predicted_epex_p_kwh, :pred_q10, :pred_q90)""",
-            [{"predicted_on": str(predicted_on), **r} for r in rows],
+               (predicted_on, datetime_utc, predicted_epex_p_kwh, pred_q10, pred_q90, is_actual)
+               VALUES (:predicted_on, :datetime_utc, :predicted_epex_p_kwh, :pred_q10, :pred_q90, :is_actual)""",
+            [{"predicted_on": str(predicted_on), "is_actual": 0, **r} for r in rows],
         )
     return len(rows)
 
@@ -635,6 +644,7 @@ def get_verifiable_predictions(as_of: date) -> list:
             FROM daily_predictions p
             JOIN market_index_halfhourly m ON DATE(m.datetime_utc) = p.date
             WHERE p.date <= ?
+              AND (p.is_actual IS NULL OR p.is_actual = 0)
             GROUP BY p.predicted_on, p.date
             ORDER BY p.date, p.predicted_on
             """,
@@ -814,6 +824,17 @@ def get_last_complete_midprice_date(min_slots: int = 46):
             (min_slots,),
         ).fetchone()
     return _date.fromisoformat(row[0]) if row else None
+
+
+def has_complete_midprice(target_date: date, min_slots: int = 46) -> bool:
+    """Return True if `target_date` has at least `min_slots` HH entries."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT COUNT(*) FROM market_index_halfhourly
+               WHERE DATE(datetime_utc) = ?""",
+            (str(target_date),),
+        ).fetchone()
+    return row[0] >= min_slots
 
 
 def get_halfhourly_midprice(date_from: date, date_to: date) -> list:

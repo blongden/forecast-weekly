@@ -431,10 +431,6 @@
      {
       "Environment": [
        {
-        "Name": "PUBLIC_MODE",
-        "Value": "1"
-       },
-       {
         "Name": "DASHBOARD_BUCKET",
         "Value": {
          "Ref": "Dashboard9E4231ED"
@@ -461,7 +457,7 @@
       ],
       "Essential": true,
       "Image": {
-       "Fn::Sub": "627266360979.dkr.ecr.eu-west-2.${AWS::URLSuffix}/cdk-hnb659fds-container-assets-627266360979-eu-west-2:fc3ff04f6cf5d685239a7cdec558dfa289bd238ad3063cb00fb03ca0b40fa981"
+       "Fn::Sub": "627266360979.dkr.ecr.eu-west-2.${AWS::URLSuffix}/cdk-hnb659fds-container-assets-627266360979-eu-west-2:1a920875ea1a91072caaa984801fcb422cadaeeb4ee73e49ea8a3f9c0f8de05d"
       },
       "LogConfiguration": {
        "LogDriver": "awslogs",
@@ -520,6 +516,20 @@
             "Ref": "ApiKeys3BB3983D"
            },
            ":ENTSOE_API_KEY::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "OPENAI_API_KEY",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Ref": "ApiKeys3BB3983D"
+           },
+           ":OPENAI_API_KEY::"
           ]
          ]
         }

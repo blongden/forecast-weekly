@@ -1,16 +1,16 @@
 {
   "version": "52.0.0",
   "files": {
-    "db4f6dce43754869fe34e112cd7acb379b8e1fbd795bcca66ba2f47813fbb632": {
+    "057c7368cdcef806e7abd7f056d106c3cde417c983e7b8fbd2267f871ca2091a": {
       "displayName": "EnergyAnalysis Template",
       "source": {
         "path": "EnergyAnalysis.template.json",
         "packaging": "file"
       },
       "destinations": {
-        "627266360979-eu-west-2-00d513fb": {
+        "627266360979-eu-west-2-21ed4b1a": {
           "bucketName": "cdk-hnb659fds-assets-627266360979-eu-west-2",
-          "objectKey": "db4f6dce43754869fe34e112cd7acb379b8e1fbd795bcca66ba2f47813fbb632.json",
+          "objectKey": "057c7368cdcef806e7abd7f056d106c3cde417c983e7b8fbd2267f871ca2091a.json",
           "region": "eu-west-2",
           "assumeRoleArn": "arn:${AWS::Partition}:iam::627266360979:role/cdk-hnb659fds-file-publishing-role-627266360979-eu-west-2"
         }
@@ -18,16 +18,16 @@
     }
   },
   "dockerImages": {
-    "fc3ff04f6cf5d685239a7cdec558dfa289bd238ad3063cb00fb03ca0b40fa981": {
+    "1a920875ea1a91072caaa984801fcb422cadaeeb4ee73e49ea8a3f9c0f8de05d": {
       "displayName": "TaskDef/App/AssetImage",
       "source": {
-        "directory": "asset.fc3ff04f6cf5d685239a7cdec558dfa289bd238ad3063cb00fb03ca0b40fa981",
+        "directory": "asset.1a920875ea1a91072caaa984801fcb422cadaeeb4ee73e49ea8a3f9c0f8de05d.weekly",
         "platform": "linux/amd64"
       },
       "destinations": {
-        "627266360979-eu-west-2-021b0ea8": {
+        "627266360979-eu-west-2-1199746d": {
           "repositoryName": "cdk-hnb659fds-container-assets-627266360979-eu-west-2",
-          "imageTag": "fc3ff04f6cf5d685239a7cdec558dfa289bd238ad3063cb00fb03ca0b40fa981",
+          "imageTag": "1a920875ea1a91072caaa984801fcb422cadaeeb4ee73e49ea8a3f9c0f8de05d",
           "region": "eu-west-2",
           "assumeRoleArn": "arn:${AWS::Partition}:iam::627266360979:role/cdk-hnb659fds-image-publishing-role-627266360979-eu-west-2"
         }

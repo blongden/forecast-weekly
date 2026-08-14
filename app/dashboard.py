@@ -70,12 +70,43 @@ def _fig_halfhourly_forecast(hh_pred: pd.DataFrame, hist_mean: float,
             hoverinfo="skip",
         ))
 
-    fig.add_trace(go.Scatter(
-        x=hh_pred["datetime_local"], y=hh_pred["predicted_epex_p_kwh"],
-        mode="lines", name="Predicted wholesale (EPEX)",
-        line=dict(color=_FORECAST_COL, width=1.5),
-        hovertemplate="%{x|%a %d %b %H:%M}<br>Wholesale: %{y:.2f}p/kWh<extra></extra>",
-    ))
+    # Split actual (D+1) vs forecast (D+2+) traces
+    _ACTUAL_COL = "#27ae60"  # green for settled prices
+    has_actual = "is_actual" in hh_pred.columns and hh_pred["is_actual"].any()
+    if has_actual:
+        actual_mask = hh_pred["is_actual"].astype(bool)
+        hh_actual = hh_pred[actual_mask]
+        hh_forecast = hh_pred[~actual_mask]
+
+        fig.add_trace(go.Scatter(
+            x=hh_actual["datetime_local"], y=hh_actual["predicted_epex_p_kwh"],
+            mode="lines", name="D+1 Actual (EPEX settled)",
+            line=dict(color=_ACTUAL_COL, width=2),
+            hovertemplate="%{x|%a %d %b %H:%M}<br>Actual: %{y:.2f}p/kWh<extra></extra>",
+        ))
+        if not hh_forecast.empty:
+            fig.add_trace(go.Scatter(
+                x=hh_forecast["datetime_local"], y=hh_forecast["predicted_epex_p_kwh"],
+                mode="lines", name="D+2+ Forecast (model)",
+                line=dict(color=_FORECAST_COL, width=1.5),
+                hovertemplate="%{x|%a %d %b %H:%M}<br>Forecast: %{y:.2f}p/kWh<extra></extra>",
+            ))
+        # Add boundary annotation
+        if not hh_actual.empty and not hh_forecast.empty:
+            boundary_x = hh_actual["datetime_local"].max()
+            fig.add_vline(
+                x=boundary_x, line_dash="dot", line_color="grey", line_width=1,
+                annotation_text="Actual → Forecast",
+                annotation_position="top",
+                annotation_font_size=9,
+            )
+    else:
+        fig.add_trace(go.Scatter(
+            x=hh_pred["datetime_local"], y=hh_pred["predicted_epex_p_kwh"],
+            mode="lines", name="Predicted wholesale (EPEX)",
+            line=dict(color=_FORECAST_COL, width=1.5),
+            hovertemplate="%{x|%a %d %b %H:%M}<br>Wholesale: %{y:.2f}p/kWh<extra></extra>",
+        ))
 
     # ── Tariff overlay: step line per band per day (first 3 days only) ────────
     if daily_tariffs_3:
@@ -144,6 +175,153 @@ def _fig_halfhourly_forecast(hh_pred: pd.DataFrame, hist_mean: float,
     fig.update_layout(
         template=_TEMPLATE,
         title="7-Day Half-Hourly Wholesale Forecast  (shaded = 16:00–19:00 peak period)",
+        yaxis_title="Price (p/kWh)",
+        xaxis_title="",
+        legend=dict(orientation="h", y=1.10),
+        hovermode="x unified",
+        height=460,
+        margin=dict(t=90, b=40),
+    )
+    return fig
+
+
+def _fig_predicted_vs_actual(predicted_on: str) -> go.Figure | None:
+    """Overlay stored HH predictions against actual EPEX prices.
+
+    Shows: actual prices (solid green) where available, predicted prices
+    (dashed blue) for comparison on the same slots, then the future forecast
+    (solid blue) where no actuals exist yet.  Returns None if no data.
+    """
+    from app import db as _db
+    from zoneinfo import ZoneInfo as _ZI
+    _london = _ZI("Europe/London")
+
+    with _db.get_conn() as conn:
+        pred_rows = conn.execute(
+            """SELECT datetime_utc, predicted_epex_p_kwh, is_actual
+               FROM halfhourly_predictions
+               WHERE predicted_on = ?
+               ORDER BY datetime_utc""",
+            (predicted_on,),
+        ).fetchall()
+    if not pred_rows:
+        return None
+
+    # Build prediction DataFrame
+    pred_data = []
+    for r in pred_rows:
+        ts = pd.Timestamp(r[0])
+        dt_utc = ts if ts.tzinfo is not None else ts.tz_localize("UTC")
+        dt_local = dt_utc.tz_convert(_london)
+        pred_data.append({
+            "datetime_local": dt_local,
+            "datetime_utc": r[0],
+            "predicted_p_kwh": r[1],
+            "is_actual_pred": bool(r[2]) if r[2] is not None else False,
+        })
+    pdf = pd.DataFrame(pred_data)
+
+    # Get actual EPEX prices for the date range covered by predictions
+    date_min = pdf["datetime_local"].dt.date.min()
+    date_max = pdf["datetime_local"].dt.date.max()
+    from datetime import date as _date
+    actual_rows = _db.get_halfhourly_midprice(_date.fromisoformat(str(date_min)),
+                                               _date.fromisoformat(str(date_max)))
+    actual_map = {}
+    for r in actual_rows:
+        ts = pd.Timestamp(r[0])
+        dt_utc = ts if ts.tzinfo is not None else ts.tz_localize("UTC")
+        dt_local = dt_utc.tz_convert(_london)
+        actual_map[dt_local] = r[1] * 0.1  # £/MWh → p/kWh
+
+    pdf["actual_p_kwh"] = pdf["datetime_local"].map(actual_map)
+    has_actuals = pdf["actual_p_kwh"].notna().any()
+
+    fig = go.Figure()
+
+    # Peak shading
+    dates = pdf["datetime_local"].dt.date.unique()
+    for d in dates:
+        fig.add_vrect(
+            x0=f"{d}T16:00", x1=f"{d}T19:00",
+            fillcolor=_PEAK_COL, line_width=0,
+            annotation_text="Peak" if d == dates[0] else "",
+            annotation_position="top left",
+            annotation_font_size=9,
+        )
+
+    if has_actuals:
+        # Split into slots with and without actuals
+        with_actual = pdf[pdf["actual_p_kwh"].notna()]
+        without_actual = pdf[pdf["actual_p_kwh"].isna()]
+
+        # Actual prices — solid green
+        fig.add_trace(go.Scatter(
+            x=with_actual["datetime_local"], y=with_actual["actual_p_kwh"],
+            mode="lines", name="Actual EPEX price",
+            line=dict(color="#27ae60", width=2.5),
+            hovertemplate="%{x|%a %d %b %H:%M}<br>Actual: %{y:.2f}p/kWh<extra></extra>",
+        ))
+
+        # Prediction on same slots — dashed blue (shows the error)
+        fig.add_trace(go.Scatter(
+            x=with_actual["datetime_local"], y=with_actual["predicted_p_kwh"],
+            mode="lines", name="What we predicted",
+            line=dict(color=_FORECAST_COL, width=1.5, dash="dash"),
+            hovertemplate="%{x|%a %d %b %H:%M}<br>Predicted: %{y:.2f}p/kWh<extra></extra>",
+        ))
+
+        # Error shading between predicted and actual
+        fig.add_trace(go.Scatter(
+            x=pd.concat([with_actual["datetime_local"], with_actual["datetime_local"][::-1]]),
+            y=pd.concat([with_actual["actual_p_kwh"], with_actual["predicted_p_kwh"][::-1]]),
+            fill="toself", fillcolor="rgba(231,76,60,0.10)",
+            line=dict(width=0), showlegend=False, hoverinfo="skip",
+        ))
+
+        # Boundary annotation
+        if not without_actual.empty:
+            boundary_x = with_actual["datetime_local"].max()
+            fig.add_shape(
+                type="line",
+                x0=str(boundary_x), x1=str(boundary_x),
+                y0=0, y1=1, yref="paper",
+                line=dict(dash="dot", color="grey", width=1),
+            )
+            fig.add_annotation(
+                x=str(boundary_x), y=1, yref="paper",
+                text="Now → Forecast", showarrow=False,
+                font=dict(size=9),
+            )
+
+        # Future forecast — solid blue
+        if not without_actual.empty:
+            # Connect to last actual point for visual continuity
+            bridge = with_actual.iloc[-1:]
+            future = pd.concat([bridge, without_actual], ignore_index=True)
+            fig.add_trace(go.Scatter(
+                x=future["datetime_local"], y=future["predicted_p_kwh"],
+                mode="lines", name="Forecast (model)",
+                line=dict(color=_FORECAST_COL, width=1.5),
+                hovertemplate="%{x|%a %d %b %H:%M}<br>Forecast: %{y:.2f}p/kWh<extra></extra>",
+            ))
+
+        # Compute MAE for the overlap
+        mae = (with_actual["actual_p_kwh"] - with_actual["predicted_p_kwh"]).abs().mean()
+        title_suffix = f"  (MAE on actuals so far: {mae:.2f}p/kWh)"
+    else:
+        # No actuals yet — just show prediction
+        fig.add_trace(go.Scatter(
+            x=pdf["datetime_local"], y=pdf["predicted_p_kwh"],
+            mode="lines", name="Forecast (model)",
+            line=dict(color=_FORECAST_COL, width=1.5),
+            hovertemplate="%{x|%a %d %b %H:%M}<br>Forecast: %{y:.2f}p/kWh<extra></extra>",
+        ))
+        title_suffix = ""
+
+    fig.update_layout(
+        template=_TEMPLATE,
+        title=f"Predicted vs Actual — run of {predicted_on}{title_suffix}",
         yaxis_title="Price (p/kWh)",
         xaxis_title="",
         legend=dict(orientation="h", y=1.10),
@@ -640,37 +818,40 @@ def _daily_forecast_table(predictions: pd.DataFrame, hist_mean: float) -> go.Fig
         pred = r["predicted_epex_p_kwh"]
         vs   = pred - hist_mean
         sign = "▲" if vs >= 0 else "▼"
+        is_actual = bool(r.get("is_actual", False))
         rows.append({
             "day":   d.strftime("%A"),
             "date":  d.strftime("%d %b %Y"),
+            "type":  "Actual" if is_actual else "Forecast",
             "pred":  f"{pred:.2f}p",
             "vs":    f"{sign} {abs(vs):.2f}p vs 12m avg",
             "_pred": pred,
+            "_actual": is_actual,
         })
 
     df = pd.DataFrame(rows)
 
     cell_colours = [
-        "#ffeaea" if v > hist_mean else "#eafff0"
-        for v in df["_pred"]
+        "#d5f5e3" if a else ("#ffeaea" if v > hist_mean else "#eafff0")
+        for v, a in zip(df["_pred"], df["_actual"])
     ]
 
     fig = go.Figure(go.Table(
         header=dict(
-            values=["<b>Day</b>", "<b>Date</b>",
-                    "<b>Predicted EPEX (daily avg)</b>", "<b>vs 12m avg</b>"],
+            values=["<b>Day</b>", "<b>Date</b>", "<b>Type</b>",
+                    "<b>EPEX (daily avg)</b>", "<b>vs 12m avg</b>"],
             fill_color="#2c3e50", font=dict(color="white", size=13),
             align="left", height=36,
         ),
         cells=dict(
-            values=[df["day"], df["date"], df["pred"], df["vs"]],
+            values=[df["day"], df["date"], df["type"], df["pred"], df["vs"]],
             align="left", font=dict(size=12), height=32,
-            fill_color=[cell_colours] * 4,
+            fill_color=[cell_colours] * 5,
         ),
     ))
     fig.update_layout(
         template=_TEMPLATE,
-        title=f"7-Day Daily Forecast  (daily model · 12m avg = {hist_mean:.2f}p · red = above avg)",
+        title=f"7-Day Outlook  (D+1 = settled auction price · D+2+ = model forecast · 12m avg = {hist_mean:.2f}p)",
         height=max(300, 120 + 36 * len(df)),
         margin=dict(t=60, b=10, l=0, r=0),
     )
@@ -1206,6 +1387,9 @@ def generate(
     else:
         fig_daily_forecast = None
 
+    # Predicted vs Actual chart (latest run)
+    fig_pred_vs_actual = _fig_predicted_vs_actual(datetime.now().strftime("%Y-%m-%d"))
+
     # Ensemble charts
     fig_lgbm_imp_daily = _fig_lgbm_importance(ensemble, "Daily") if ensemble else None
     fig_lgbm_imp_hh = _fig_lgbm_importance(hh_ensemble, "Half-Hourly") if hh_ensemble else None
@@ -1378,6 +1562,17 @@ def generate(
   {_div(fig_forecast)}
   {"" if fig_daily_forecast is None else _div(fig_daily_forecast)}
 </div>
+{"" if fig_pred_vs_actual is None else f'''
+<div id="pred-vs-actual">
+  {_section("Predicted vs Actual",
+            "How did today's forecast compare to actual settled prices? "
+            "Green = actual EPEX price, dashed blue = what the model predicted, "
+            "pink shading = prediction error. Solid blue = future forecast.")}
+</div>
+<div class="charts">
+  {_div(fig_pred_vs_actual)}
+</div>
+'''}
 {_forecast_summary_html(forecast_summary)}
 
 <div id="drivers">
