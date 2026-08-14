@@ -9,12 +9,12 @@ permissions:
 
 env:
   AWS_REGION:       eu-west-2
-  ECR_REGISTRY:     627266360979.dkr.ecr.eu-west-2.amazonaws.com
-  ECR_REPOSITORY:   cdk-hnb659fds-container-assets-627266360979-eu-west-2
+  ECR_REGISTRY:     711695043600.dkr.ecr.eu-west-2.amazonaws.com
+  ECR_REPOSITORY:   cdk-hnb659fds-container-assets-711695043600-eu-west-2
   TASK_DEF_FAMILY:  EnergyAnalysisTaskDefE9704C45
-  CLUSTER_ARN:      arn:aws:ecs:eu-west-2:627266360979:cluster/EnergyAnalysis-ClusterEB0386A7-uPPomgV9zj3O
-  EB_RULE:          EnergyAnalysis-DailyRunDEF7747D-KQZLhxQuSBPa
-  EB_ROLE_ARN:      arn:aws:iam::627266360979:role/EnergyAnalysis-TaskDefEventsRoleFB3B67B8-QDnsHwaQuK0j
+  CLUSTER_ARN:      arn:aws:ecs:eu-west-2:711695043600:cluster/EnergyAnalysis-ClusterEB0386A7-zz6UZzcErUMW
+  EB_RULE:          EnergyAnalysis-DailyRunDEF7747D-lt8qiUZido6W
+  EB_ROLE_ARN:      arn:aws:iam::711695043600:role/EnergyAnalysis-TaskDefEventsRoleFB3B67B8-KO4PTRbTzuPU
 
 jobs:
   deploy:
@@ -85,8 +85,8 @@ jobs:
                 \"LaunchType\": \"FARGATE\",
                 \"NetworkConfiguration\": {
                   \"awsvpcConfiguration\": {
-                    \"Subnets\": [\"subnet-1bab2161\", \"subnet-e97aa3a5\", \"subnet-3a8ec053\"],
-                    \"SecurityGroups\": [\"sg-0fe23dcf606bf5bd4\"],
+                    \"Subnets\": [\"subnet-0c6c3a2293c8d8710\", \"subnet-00edaae9544fd9ed8\", \"subnet-0b8023abd08c34477\"],
+                    \"SecurityGroups\": [\"sg-0b8fe0f030d1de0f7\"],
                     \"AssignPublicIp\": \"ENABLED\"
                   }
                 },
