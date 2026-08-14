@@ -240,7 +240,7 @@ def run_archived_leadtime_backtest(
         latest_commodity_bt = {
             col: train[col].dropna().iloc[-1]
             if col in train.columns and train[col].notna().any() else None
-            for col in COMMODITY_FEATURES
+            for col in list(COMMODITY_FEATURES) + list(INVENTORY_FEATURES) + list(LAG_ROLLING_FEATURES)
         }
 
         # Get archived weather forecasts made on this fetch_date

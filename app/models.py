@@ -3,7 +3,11 @@ Model fitting, prediction, and ensemble blending.
 Daily model: Ridge + LightGBM ensemble for daily avg EPEX price.
 Half-hourly model: Ridge + LightGBM ensemble for per-slot EPEX price.
 """
+import collections
+import statistics
 import warnings
+from datetime import date as date_type
+
 warnings.filterwarnings("ignore", message="X does not have valid feature names")
 
 import lightgbm as lgb
@@ -988,9 +992,6 @@ def compute_bias_by_lead(verifiable: list, window_days: int = 30) -> dict:
     """
     if not verifiable:
         return {}
-
-    from datetime import date as date_type
-    import collections, statistics
 
     cutoff = pd.Timestamp.today().date() - pd.Timedelta(days=window_days)
     errors: dict[int, list] = collections.defaultdict(list)

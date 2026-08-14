@@ -9,7 +9,7 @@ daily_summary   : pre-aggregated daily view (rebuilt on demand)
 """
 import sqlite3
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Generator
 
 from app.config import DB_PATH
@@ -96,6 +96,7 @@ def init_db() -> None:
                 predicted_on         TEXT NOT NULL,  -- YYYY-MM-DD date prediction was made
                 date                 TEXT NOT NULL,  -- YYYY-MM-DD date being predicted
                 predicted_epex_p_kwh REAL,           -- predicted EPEX wholesale price (p/kWh)
+                is_actual            INTEGER DEFAULT 0,
                 PRIMARY KEY (predicted_on, date)
             );
 
@@ -105,6 +106,7 @@ def init_db() -> None:
                 predicted_epex_p_kwh REAL,           -- blended ensemble price (p/kWh)
                 pred_q10             REAL,           -- 10th percentile (p/kWh)
                 pred_q90             REAL,           -- 90th percentile (p/kWh)
+                is_actual            INTEGER DEFAULT 0,
                 PRIMARY KEY (predicted_on, datetime_utc)
             );
 
@@ -213,37 +215,42 @@ def _migrate_predictions_schema(conn: sqlite3.Connection) -> None:
         """)
 
 
+def _date_range(query: str, params: tuple = ()) -> tuple[str | None, str | None]:
+    """Return (min, max) from a SELECT MIN(...), MAX(...) query, or (None, None)."""
+    with get_conn() as conn:
+        row = conn.execute(query, params).fetchone()
+    if row is None or row[0] is None:
+        return None, None
+    return row[0], row[1]
+
+
+def _add_columns_if_missing(
+    conn: sqlite3.Connection, table: str, cols: list[tuple[str, str]]
+) -> None:
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for col, typ in cols:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+
+
 def _migrate_generation_schema(conn: sqlite3.Connection) -> None:
-    """Add columns to generation_halfhourly that were introduced after the initial schema."""
-    new_cols = [
+    _add_columns_if_missing(conn, "generation_halfhourly", [
         ("pumped_storage_mw", "REAL"),
         ("hydro_mw",          "REAL"),
-    ]
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(generation_halfhourly)").fetchall()}
-    for col, typ in new_cols:
-        if col not in existing:
-            conn.execute(f"ALTER TABLE generation_halfhourly ADD COLUMN {col} {typ}")
+    ])
 
 
 def _migrate_commodity_schema(conn: sqlite3.Connection) -> None:
-    """Add gbpusd, usd_index, and carbon_ets_gbp columns to commodity_prices if missing."""
-    new_cols = [
-        ("gbpusd",          "REAL"),
-        ("usd_index",       "REAL"),
-        ("carbon_ets_gbp",  "REAL"),
-    ]
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(commodity_prices)").fetchall()}
-    for col, typ in new_cols:
-        if col not in existing:
-            conn.execute(f"ALTER TABLE commodity_prices ADD COLUMN {col} {typ}")
+    _add_columns_if_missing(conn, "commodity_prices", [
+        ("gbpusd",         "REAL"),
+        ("usd_index",      "REAL"),
+        ("carbon_ets_gbp", "REAL"),
+    ])
 
 
 def _migrate_is_actual_column(conn: sqlite3.Connection) -> None:
-    """Add is_actual column to prediction tables if missing."""
     for table in ("daily_predictions", "halfhourly_predictions"):
-        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-        if "is_actual" not in existing:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN is_actual INTEGER DEFAULT 0")
+        _add_columns_if_missing(conn, table, [("is_actual", "INTEGER DEFAULT 0")])
 
 
 def commodity_needs_currency_data() -> bool:
@@ -286,12 +293,7 @@ def upsert_prices(rows: list[dict]) -> int:
 
 
 def get_price_date_range() -> tuple[str | None, str | None]:
-    """Return (min_datetime, max_datetime) of stored prices, or (None, None)."""
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT MIN(datetime), MAX(datetime) FROM prices"
-        ).fetchone()
-    return row[0], row[1]
+    return _date_range("SELECT MIN(datetime), MAX(datetime) FROM prices")
 
 
 def get_daily_prices(date_from: date, date_to: date):
@@ -331,11 +333,7 @@ def upsert_weather(rows: list[dict]) -> int:
 
 
 def get_weather_date_range() -> tuple[str | None, str | None]:
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT MIN(datetime), MAX(datetime) FROM weather_hourly"
-        ).fetchone()
-    return row[0], row[1]
+    return _date_range("SELECT MIN(datetime), MAX(datetime) FROM weather_hourly")
 
 
 def get_daily_weather(date_from: date, date_to: date):
@@ -374,11 +372,7 @@ def upsert_solar(rows: list[dict]) -> int:
 
 
 def get_solar_date_range() -> tuple[str | None, str | None]:
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT MIN(datetime_gmt), MAX(datetime_gmt) FROM solar_generation"
-        ).fetchone()
-    return row[0], row[1]
+    return _date_range("SELECT MIN(datetime_gmt), MAX(datetime_gmt) FROM solar_generation")
 
 
 def get_daily_solar(date_from: date, date_to: date) -> list:
@@ -431,12 +425,10 @@ def upsert_uk_sites(rows: list[dict]) -> int:
 
 
 def get_uk_site_date_range(site_id: str) -> tuple[str | None, str | None]:
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT MIN(datetime), MAX(datetime) FROM weather_uk_sites WHERE site_id = ?",
-            (site_id,),
-        ).fetchone()
-    return row[0], row[1]
+    return _date_range(
+        "SELECT MIN(datetime), MAX(datetime) FROM weather_uk_sites WHERE site_id = ?",
+        (site_id,),
+    )
 
 
 def get_daily_uk_avg(date_from: date, date_to: date) -> list:
@@ -500,12 +492,10 @@ def upsert_wind_sites(rows: list[dict]) -> int:
 
 
 def get_wind_site_date_range(site_id: str) -> tuple[str | None, str | None]:
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT MIN(datetime), MAX(datetime) FROM weather_wind_sites WHERE site_id = ?",
-            (site_id,),
-        ).fetchone()
-    return row[0], row[1]
+    return _date_range(
+        "SELECT MIN(datetime), MAX(datetime) FROM weather_wind_sites WHERE site_id = ?",
+        (site_id,),
+    )
 
 
 def get_daily_wind_sites(date_from: date, date_to: date) -> list:
@@ -554,11 +544,7 @@ def upsert_commodity(rows: list[dict]) -> int:
 
 
 def get_commodity_date_range() -> tuple[str | None, str | None]:
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT MIN(date), MAX(date) FROM commodity_prices"
-        ).fetchone()
-    return row[0], row[1]
+    return _date_range("SELECT MIN(date), MAX(date) FROM commodity_prices")
 
 
 def get_commodity_prices(date_from: date, date_to: date):
@@ -668,11 +654,7 @@ def upsert_demand(rows: list[dict]) -> int:
 
 
 def get_demand_date_range() -> tuple[str | None, str | None]:
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT MIN(datetime_utc), MAX(datetime_utc) FROM demand_halfhourly"
-        ).fetchone()
-    return row[0], row[1]
+    return _date_range("SELECT MIN(datetime_utc), MAX(datetime_utc) FROM demand_halfhourly")
 
 
 def get_halfhourly_demand(date_from: date, date_to: date) -> list:
@@ -720,11 +702,7 @@ def upsert_generation(rows: list[dict]) -> int:
 
 
 def get_generation_date_range() -> tuple[str | None, str | None]:
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT MIN(datetime_utc), MAX(datetime_utc) FROM generation_halfhourly"
-        ).fetchone()
-    return row[0], row[1]
+    return _date_range("SELECT MIN(datetime_utc), MAX(datetime_utc) FROM generation_halfhourly")
 
 
 def get_halfhourly_generation(date_from: date, date_to: date) -> list:
@@ -777,11 +755,7 @@ def upsert_midprice(rows: list[dict]) -> int:
 
 
 def get_midprice_date_range() -> tuple[str | None, str | None]:
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT MIN(datetime_utc), MAX(datetime_utc) FROM market_index_halfhourly"
-        ).fetchone()
-    return row[0], row[1]
+    return _date_range("SELECT MIN(datetime_utc), MAX(datetime_utc) FROM market_index_halfhourly")
 
 
 def upsert_forecast_summary(predicted_on, week_summary: str, days: list) -> None:
@@ -947,11 +921,7 @@ def upsert_gas_storage(rows: list[dict]) -> int:
 
 
 def get_gas_storage_date_range() -> tuple[str | None, str | None]:
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT MIN(date), MAX(date) FROM gas_storage"
-        ).fetchone()
-    return row[0], row[1]
+    return _date_range("SELECT MIN(date), MAX(date) FROM gas_storage")
 
 
 def get_gas_storage(date_from: date, date_to: date):
@@ -981,11 +951,7 @@ def upsert_oil_inventory(rows: list[dict]) -> int:
 
 
 def get_oil_inventory_date_range() -> tuple[str | None, str | None]:
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT MIN(date), MAX(date) FROM oil_inventory"
-        ).fetchone()
-    return row[0], row[1]
+    return _date_range("SELECT MIN(date), MAX(date) FROM oil_inventory")
 
 
 def get_oil_inventory(date_from: date, date_to: date):
@@ -1031,25 +997,13 @@ def upsert_entsoe_unavailability(rows: list[dict]) -> int:
 
 
 def get_entsoe_exchanges_date_range():
-    """Return (min_date, max_date) of scheduled exchange data, or (None, None)."""
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT MIN(DATE(datetime_utc)), MAX(DATE(datetime_utc)) FROM entsoe_scheduled_exchanges"
-        ).fetchone()
-    if row is None or row[0] is None:
-        return None, None
-    return row[0], row[1]
+    return _date_range(
+        "SELECT MIN(DATE(datetime_utc)), MAX(DATE(datetime_utc)) FROM entsoe_scheduled_exchanges"
+    )
 
 
 def get_entsoe_unavailability_date_range():
-    """Return (min_date, max_date) of unavailability data, or (None, None)."""
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT MIN(date), MAX(date) FROM entsoe_unavailability"
-        ).fetchone()
-    if row is None or row[0] is None:
-        return None, None
-    return row[0], row[1]
+    return _date_range("SELECT MIN(date), MAX(date) FROM entsoe_unavailability")
 
 
 def get_daily_scheduled_imports(date_from: date, date_to: date) -> list:
@@ -1118,12 +1072,7 @@ def upsert_system_prices(rows: list[dict]) -> int:
 
 
 def get_sysprice_date_range() -> tuple[str | None, str | None]:
-    """Return (min_datetime, max_datetime) of stored system prices, or (None, None)."""
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT MIN(datetime_utc), MAX(datetime_utc) FROM system_prices"
-        ).fetchone()
-    return (row[0], row[1]) if row else (None, None)
+    return _date_range("SELECT MIN(datetime_utc), MAX(datetime_utc) FROM system_prices")
 
 
 def get_daily_system_prices(date_from: date, date_to: date) -> list:
@@ -1142,9 +1091,8 @@ def get_daily_system_prices(date_from: date, date_to: date) -> list:
 
 
 def get_halfhourly_system_prices(date_from: date, date_to: date) -> list:
-    """Return half-hourly system prices as list of dicts."""
+    """Return half-hourly system prices as list of sqlite3.Row."""
     with get_conn() as conn:
-        conn.row_factory = lambda c, r: dict(zip([col[0] for col in c.description], r))
         return conn.execute(
             """SELECT datetime_utc, system_buy_price, system_sell_price, net_imbalance_mw
                FROM system_prices
@@ -1160,5 +1108,5 @@ def log_fetch(source: str, date_from: date, date_to: date, records: int) -> None
         conn.execute(
             """INSERT INTO fetch_log (source, fetched_at, date_from, date_to, records)
                VALUES (?, ?, ?, ?, ?)""",
-            (source, datetime.utcnow().isoformat(), str(date_from), str(date_to), records),
+            (source, datetime.now(timezone.utc).isoformat(), str(date_from), str(date_to), records),
         )
