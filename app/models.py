@@ -1065,7 +1065,7 @@ def apply_bias_correction_hh(
     for lead, bias in bias_by_lead.items():
         target_date = today + pd.Timedelta(days=lead)
         is_actual = result.get("is_actual", pd.Series(False, index=result.index))
-        mask = (result["_date"] == target_date.date()) & (~is_actual)
+        mask = (result["_date"] == target_date) & (~is_actual)
         if not mask.any():
             continue
         result.loc[mask, "predicted_epex_p_kwh"] -= bias
