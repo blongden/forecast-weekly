@@ -969,7 +969,7 @@ def scale_hh_intervals_by_leadtime(
 
     for lead, scale in scale_by_lead.items():
         target_date = today + pd.Timedelta(days=lead)
-        mask = (result["_date"] == target_date.date()) & (~result.get("is_actual", pd.Series(False, index=result.index)))
+        mask = (result["_date"] == target_date) & (~result.get("is_actual", pd.Series(False, index=result.index)))
         if not mask.any():
             continue
         mid = (result.loc[mask, "pred_q10"] + result.loc[mask, "pred_q90"]) / 2
