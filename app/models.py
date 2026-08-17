@@ -1078,6 +1078,45 @@ def apply_bias_correction_hh(
     return result
 
 
+def scale_hh_to_daily(
+    hh_pred: pd.DataFrame,
+    daily_predictions: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Scale each forecast day's HH predictions so their mean matches the daily
+    model prediction for that day. Rows marked is_actual are left unchanged.
+    This corrects the HH model's tendency to anchor on stale price lags.
+    """
+    if hh_pred.empty or daily_predictions.empty:
+        return hh_pred
+
+    result = hh_pred.copy()
+    result["_date"] = pd.to_datetime(result["datetime_local"]).dt.date
+
+    for _, row in daily_predictions.iterrows():
+        if row.get("is_actual"):
+            continue
+        d = pd.Timestamp(row["date"]).date() if hasattr(pd.Timestamp(row["date"]), "date") else row["date"]
+        daily_pred = row["predicted_epex_p_kwh"]
+        if daily_pred <= 0:
+            continue
+        mask = (result["_date"] == d) & (~result.get("is_actual", pd.Series(False, index=result.index)))
+        if not mask.any():
+            continue
+        hh_mean = result.loc[mask, "predicted_epex_p_kwh"].mean()
+        if hh_mean <= 0:
+            continue
+        scale = daily_pred / hh_mean
+        result.loc[mask, "predicted_epex_p_kwh"] *= scale
+        if "pred_q10" in result.columns:
+            result.loc[mask, "pred_q10"] *= scale
+        if "pred_q90" in result.columns:
+            result.loc[mask, "pred_q90"] *= scale
+
+    result.drop(columns=["_date"], inplace=True)
+    return result
+
+
 # ── Summary ────────────────────────────────────────────────────────────────────
 
 def print_summary(df: pd.DataFrame, correlations: dict, r2: float,

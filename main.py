@@ -548,6 +548,9 @@ def cmd_analyse() -> None:
         predictions = analysis.scale_intervals_by_leadtime(predictions, leadtime_metrics, today)
         hh_pred     = analysis.scale_hh_intervals_by_leadtime(hh_pred, leadtime_metrics, today)
 
+    # ── Anchor HH daily mean to daily model prediction ────────────────────────
+    hh_pred = analysis.scale_hh_to_daily(hh_pred, predictions)
+
     # ── PNG charts ────────────────────────────────────────────────────────────
     print("\n[Charts]   Saving PNGs …")
     ts = charts.plot_time_series(df)
