@@ -66,26 +66,23 @@ def generate_week_summary(
                         entry["offpeak_p_kwh"] = round(offpeak["predicted_epex_p_kwh"].mean(), 2)
                     break
 
-    prompt = f"""You are an energy market analyst writing a concise week-ahead electricity price summary for UK consumers and businesses.
+    prompt = f"""You are an energy market analyst writing a concise week-ahead wholesale electricity price commentary for a forecasting dashboard.
 
 Context:
-- These are EPEX SPOT GB day-ahead wholesale electricity prices in p/kWh (pence per kilowatt-hour)
-- The 12-month historical average is {hist_mean:.1f}p/kWh
-- Peak hours are 16:00-19:00 — this is normally the most expensive period (evening demand surge, less solar)
-- Off-peak is all other hours — can include cheap overnight slots AND cheap solar midday slots in summer
-- Because summer solar pulls down the off-peak average, it is possible (especially in summer) for the off-peak average to appear lower than the peak average; take care to interpret this correctly
-- "Shift load" advice should always say to move demand to the CHEAPEST period, whatever that is. If peak is cheap that week, say run appliances during peak. If off-peak is cheap, say avoid peak
-- D+1 (tomorrow) is the settled day-ahead auction price — confirmed, not a forecast
-- D+2 onwards are model forecasts with increasing uncertainty
+- These are EPEX SPOT GB day-ahead wholesale prices in p/kWh — the settlement price before network charges, metering, supplier margin, VAT or any other costs
+- The 12-month historical average wholesale price is {hist_mean:.1f}p/kWh
+- Peak hours are 16:00-19:00; off-peak is all other hours
+- D+1 (tomorrow) is the confirmed day-ahead auction price; D+2 onwards are model forecasts with increasing uncertainty
+- This is a price forecast tool. Do NOT give advice about when to use appliances or shift load — retail tariffs, standing charges and other costs sit on top of wholesale and make that advice misleading
 
 Forecast data (peak_p_kwh = average over 16:00-19:00, offpeak_p_kwh = rest of day):
 {json.dumps(daily_context, indent=2)}
 
 Write a JSON response with:
-1. "week_summary": A 1-2 sentence overview of the week ahead (trends, notable days, comparison to historical average). Be specific with numbers.
-2. "days": An array of objects, one per forecast day, each with "date" (matching the input) and "summary" (a single punchy sentence — state whether the day is cheap or expensive, identify the cheapest window, and give one clear action: e.g. "Run the dishwasher after 10pm" or "Avoid the 16:00-19:00 peak")
+1. "week_summary": A 1-2 sentence overview of the week ahead — note the trend, the range of prices, and how they compare to the historical average. Be specific with numbers.
+2. "days": An array of objects, one per forecast day, each with "date" (matching the input) and "summary" (one sentence describing that day's price level, whether peak or off-peak is more elevated, and any notable pattern such as a sharp ramp or unusually flat day).
 
-Keep language accessible — no jargon. Be direct and useful. Output valid JSON only."""
+No consumer action recommendations. No appliance advice. Market commentary only. Output valid JSON only."""
 
     try:
         response = client.chat.completions.create(
