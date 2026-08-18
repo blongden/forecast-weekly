@@ -446,52 +446,6 @@ def cmd_analyse() -> None:
 
     analysis.print_summary(df, correlations, r2, model, scaler, fcols, predictions, r2_hh)
 
-    # ── Store today's predictions in DB ───────────────────────────────────────
-    pred_rows = [
-        {
-            "date":                str(row["date"].date() if hasattr(row["date"], "date") else row["date"]),
-            "predicted_epex_p_kwh": row["predicted_epex_p_kwh"],
-            "is_actual":           int(bool(row.get("is_actual", False))),
-        }
-        for _, row in predictions.iterrows()
-    ]
-    db.upsert_daily_predictions(today, pred_rows)
-
-    # ── Store half-hourly predictions in SQLite ──────────────────────────────
-    if not hh_pred.empty and "datetime_local" in hh_pred.columns:
-        import pandas as _pd
-        from zoneinfo import ZoneInfo as _ZI
-        _london = _ZI("Europe/London")
-        hh_rows = []
-        for _, row in hh_pred.iterrows():
-            dt = _pd.Timestamp(row["datetime_local"])
-            if dt.tzinfo is None:
-                dt = dt.tz_localize(_london)
-            slot_utc = dt.tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
-            hh_rows.append({
-                "datetime_utc":         slot_utc,
-                "predicted_epex_p_kwh": row["predicted_epex_p_kwh"],
-                "pred_q10":             row.get("pred_q10"),
-                "pred_q90":             row.get("pred_q90"),
-                "is_actual":            int(bool(row.get("is_actual", False))),
-            })
-        n = db.upsert_halfhourly_predictions(today, hh_rows)
-        print(f"[DB] Stored {n} half-hourly predictions in SQLite.")
-
-    # ── Week-ahead LLM summary ─────────────────────────────────────────────────
-    try:
-        from app.summary import generate_week_summary
-        print("[Summary] Generating week-ahead narrative …", end="", flush=True)
-        summary = generate_week_summary(predictions, hh_pred, df["avg_epex_p_kwh"].mean())
-        if summary:
-            db.upsert_forecast_summary(today, summary["week_summary"], summary.get("days", []))
-            print(f" done.")
-            print(f"  {summary['week_summary']}")
-        else:
-            print(" skipped (no OPENAI_API_KEY or call failed).")
-    except Exception as e:
-        print(f" failed: {e}")
-
     # ── Backtest (out-of-sample hold-out) ─────────────────────────────────────
     print("[Backtest] Running 30-day hold-out test …", end="", flush=True)
     backtest_df, backtest_metrics = analysis.run_backtest(df, holdout_days=30)
@@ -550,6 +504,51 @@ def cmd_analyse() -> None:
 
     # ── Anchor HH daily mean to daily model prediction ────────────────────────
     hh_pred = analysis.scale_hh_to_daily(hh_pred, predictions)
+
+    # ── Store today's predictions in DB (after all corrections) ───────────────
+    pred_rows = [
+        {
+            "date":                str(row["date"].date() if hasattr(row["date"], "date") else row["date"]),
+            "predicted_epex_p_kwh": row["predicted_epex_p_kwh"],
+            "is_actual":           int(bool(row.get("is_actual", False))),
+        }
+        for _, row in predictions.iterrows()
+    ]
+    db.upsert_daily_predictions(today, pred_rows)
+
+    if not hh_pred.empty and "datetime_local" in hh_pred.columns:
+        import pandas as _pd
+        from zoneinfo import ZoneInfo as _ZI
+        _london = _ZI("Europe/London")
+        hh_rows = []
+        for _, row in hh_pred.iterrows():
+            dt = _pd.Timestamp(row["datetime_local"])
+            if dt.tzinfo is None:
+                dt = dt.tz_localize(_london)
+            slot_utc = dt.tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
+            hh_rows.append({
+                "datetime_utc":         slot_utc,
+                "predicted_epex_p_kwh": row["predicted_epex_p_kwh"],
+                "pred_q10":             row.get("pred_q10"),
+                "pred_q90":             row.get("pred_q90"),
+                "is_actual":            int(bool(row.get("is_actual", False))),
+            })
+        n = db.upsert_halfhourly_predictions(today, hh_rows)
+        print(f"[DB] Stored {n} half-hourly predictions in SQLite.")
+
+    # ── Week-ahead LLM summary ─────────────────────────────────────────────────
+    try:
+        from app.summary import generate_week_summary
+        print("[Summary] Generating week-ahead narrative …", end="", flush=True)
+        summary = generate_week_summary(predictions, hh_pred, df["avg_epex_p_kwh"].mean())
+        if summary:
+            db.upsert_forecast_summary(today, summary["week_summary"], summary.get("days", []))
+            print(f" done.")
+            print(f"  {summary['week_summary']}")
+        else:
+            print(" skipped (no OPENAI_API_KEY or call failed).")
+    except Exception as e:
+        print(f" failed: {e}")
 
     # ── PNG charts ────────────────────────────────────────────────────────────
     print("\n[Charts]   Saving PNGs …")
